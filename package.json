@@ -1,0 +1,34 @@
+{
+  "type": "module",
+  "scripts": {
+    "dev": "nodemon --watch src --exec tsx src/server.ts",
+    "dev:mcp": "nodemon --watch src --exec tsx src/mcp/server.ts",
+    "dev:all": "run-p dev dev:mcp",
+    "build": "tsc",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@qdrant/js-client-rest": "^1.16.2",
+    "adm-zip": "^0.5.16",
+    "body-parser": "^2.2.1",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "fast-xml-parser": "^5.3.3",
+    "llamaindex": "^0.12.1",
+    "openai": "^6.13.0",
+    "pdfjs-dist": "^5.4.449"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.0.2",
+    "nodemon": "^3.1.11",
+    "npm-run-all": "^4.1.5",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
