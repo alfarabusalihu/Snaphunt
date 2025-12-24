@@ -2,7 +2,7 @@ import AdmZip from "adm-zip";
 import crypto from "node:crypto";
 import path from "node:path";
 import { parsePdf } from "./parse.js";
-import { ParsedDocument } from "./index.js";
+import { ParsedDocument, calculateChecksum } from "./index.js";
 
 export async function parseZip(buffer: Buffer, originalLocation: string): Promise<ParsedDocument[]> {
     const zip = new AdmZip(buffer);
@@ -14,13 +14,16 @@ export async function parseZip(buffer: Buffer, originalLocation: string): Promis
             try {
                 const pdfBuffer = entry.getData();
                 const text = await parsePdf(pdfBuffer);
+                const checksum = calculateChecksum(pdfBuffer);
                 results.push({
                     id: crypto.randomUUID(),
                     text,
+                    checksum,
                     metadata: {
                         source: "local",
                         location: `${originalLocation}/${entry.entryName}`,
-                        fileName: path.basename(entry.entryName)
+                        fileName: path.basename(entry.entryName),
+                        size: pdfBuffer.length
                     }
                 });
             } catch (error) {
@@ -30,4 +33,10 @@ export async function parseZip(buffer: Buffer, originalLocation: string): Promis
     }
 
     return results;
+}
+
+export function getZipEntryBuffer(zipPath: string, entryName: string): Buffer | null {
+    const zip = new AdmZip(zipPath);
+    const entry = zip.getEntry(entryName);
+    return entry ? entry.getData() : null;
 }

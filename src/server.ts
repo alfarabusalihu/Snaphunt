@@ -4,15 +4,15 @@ import express from "express";
 import bodyParser from "body-parser";
 
 import { ingestDocument } from "./rag/injestion.js";
-import { parseInput } from "./parser/index.js";
+import { parseInput, getFileBuffer } from "./parser/index.js";
 import { crawlBucket } from "./parser/crawler.js";
 import { queryDocuments } from "./query.js";
 import { resetCollection } from "./rag/vector.js";
-import { answerQuestion } from "./mcp/tools/analyzeCVs.js";
+import { answerQuestion, analyzeTalentPool } from "./mcp/tools/analyzeCVs.js";
+import { registry } from "./db.js";
 import cors from "cors";
 import path from "node:path";
 import fs from "node:fs";
-import AdmZip from "adm-zip";
 
 
 const app = express();
@@ -21,54 +21,71 @@ const PORT = process.env.PORT;
 app.use(cors());
 app.use(bodyParser.json());
 
-app.get("/", (req, res) => {
-  res.send("Backend server running");
+// app.get("/", (req, res) => {
+//   res.send(`Backend server running on ${PORT}`);
+// });
+
+app.post("/preview", async (req, res) => {
+  try {
+    const { sourceType, sourceValue } = req.body;
+    if (!sourceValue) return res.status(400).json({ error: "sourceValue is required" });
+
+    let targets = sourceType === 'file' ? [sourceValue] : [sourceValue];
+
+    if (sourceType === 'url') {
+      const crawled = await crawlBucket(sourceValue);
+      if (crawled.length > 0) targets = crawled;
+    }
+
+    const files: any[] = [];
+    for (const target of targets) {
+      try {
+        const parsedDocs = await parseInput(target);
+        for (const doc of parsedDocs) {
+          files.push({
+            id: doc.id,
+            fileName: doc.metadata.fileName,
+            location: doc.metadata.location,
+            checksum: doc.checksum,
+            size: doc.metadata.size
+          });
+        }
+      } catch (e) {
+        console.error(`Preview failed for ${target}:`, e);
+      }
+    }
+    res.json({ files });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 app.post("/ingest", async (req, res) => {
   try {
-    const { rawText, source, filePath, url, chunkSize = 500, overlap = 50, apiKey } = req.body;
+    const { files, apiKey, chunkSize = 500, overlap = 50 } = req.body;
 
     if (!apiKey) return res.status(400).json({ error: "apiKey is required" });
+    if (!files || !Array.isArray(files)) return res.status(400).json({ error: "files list is required" });
 
-    if (filePath || url) {
-      let targets = filePath ? [filePath] : (url ? [url] : []);
-
-      if (url) {
-        const crawled = await crawlBucket(url);
-        if (crawled.length > 0) {
-          console.log(`Crawled found ${crawled.length} files from ${url}`);
-          targets = crawled;
-        }
-      }
-
-      let successCount = 0;
-      for (const target of targets) {
-        try {
-          const parsedDocs = await parseInput(target);
-          for (const doc of parsedDocs) {
-            await ingestDocument(doc.text, {
-              source: doc.metadata.fileName || source || target,
-              chunkSize,
-              overlap,
-              apiKey
-            });
-          }
+    let successCount = 0;
+    for (const file of files) {
+      try {
+        const parsedDocs = await parseInput(file.location);
+        const doc = parsedDocs.find(d => d.checksum === file.checksum);
+        if (doc) {
+          await ingestDocument(doc.text, {
+            source: doc.metadata.fileName || file.location,
+            chunkSize,
+            overlap,
+            apiKey
+          });
           successCount++;
-        } catch (e) {
-          console.error(`Failed to ingest ${target}:`, e);
         }
+      } catch (e) {
+        console.error(`Failed to ingest ${file.location}:`, e);
       }
-      return res.json({ message: `Ingestion complete. Processed ${successCount}/${targets.length} targets.` });
     }
-
-    if (!rawText || !source) {
-      return res.status(400).json({ error: "Provide (rawText and source) OR (filePath/url)" });
-    }
-
-    await ingestDocument(rawText, { source, chunkSize, overlap, apiKey });
-
-    res.json({ message: `Document ${source} ingested successfully.` });
+    return res.json({ message: `Ingestion complete. Processed ${successCount}/${files.length} files.` });
   } catch (err) {
     if (err instanceof Error) res.status(500).json({ error: err.message });
     else res.status(500).json({ error: String(err) });
@@ -117,19 +134,16 @@ app.post("/analyze", async (req, res) => {
       return res.status(400).json({ error: `${analysisProvider} API key is required for analysis.` });
     }
 
-    const contextText = chunks
-      .sort((a, b) => b.score - a.score)
-      .map(c => `[${c.payload.source} - chunk ${c.payload.chunkIndex}]\n${c.payload.text}`)
-      .join("\n\n");
+    console.log(`🧠 Delegating analysis to MCP Tool [${analysisProvider}]`);
 
-    const uniqueSources = new Set(chunks.map(c => c.payload.source));
-    console.log(`🔍 [${analysisProvider}] Analyzing context from ${chunks.length} chunks across ${uniqueSources.size} unique sources.`);
+    const analysis = await analyzeTalentPool(
+      chunks,
+      question,
+      effectiveApiKey,
+      effectiveModel,
+      analysisProvider as any
+    );
 
-    const prompt = question
-      ? `${question}\n\nContext:\n${contextText}`
-      : `Analyze the following CVs and summarize key information:\n\n${contextText}`;
-
-    const analysis = await answerQuestion(prompt, contextText, effectiveApiKey, effectiveModel, analysisProvider);
     res.json({ analysis });
 
   } catch (err) {
@@ -141,53 +155,32 @@ app.post("/analyze", async (req, res) => {
 app.get("/file", async (req, res) => {
   try {
     const { path: filePath } = req.query;
-    if (!filePath || typeof filePath !== 'string') {
-      return res.status(400).send("Path is required");
-    }
+    if (!filePath || typeof filePath !== 'string') return res.status(400).send("Path is required");
 
-    if (filePath.startsWith("http")) {
-      console.log(`🔗 Redirecting to external URL: ${filePath}`);
-      return res.redirect(filePath);
-    }
+    const result = await getFileBuffer(filePath);
+    if (!result) return res.status(404).send("File not found");
 
-    const zipMatch = filePath.match(/(.*\.zip)\/(.*)/i);
-    if (zipMatch) {
-      const [, zipPath, entryName] = zipMatch;
-      const normalizedZipPath = path.resolve(zipPath);
-
-      if (fs.existsSync(normalizedZipPath)) {
-        console.log(`📦 Extracting entry "${entryName}" from ZIP: ${normalizedZipPath}`);
-        const zip = new AdmZip(normalizedZipPath);
-        const entry = zip.getEntry(entryName);
-
-        if (entry) {
-          const buffer = entry.getData();
-          res.setHeader('Content-Type', 'application/pdf');
-          res.setHeader('Content-Disposition', `inline; filename="${path.basename(entryName)}"`);
-          return res.send(buffer);
-        }
-      }
-    }
-
-    const absolutePath = path.resolve(filePath);
-    console.log(`📂 Serving local file: ${absolutePath}`);
-
-    if (!fs.existsSync(absolutePath)) {
-      console.error(`❌ File not found: ${absolutePath}`);
-      return res.status(404).send("File not found");
-    }
-
-    res.sendFile(absolutePath, (err) => {
-      if (err) {
-        console.error(`❌ Error sending file ${absolutePath}:`, err);
-        if (!res.headersSent) {
-          res.status(500).send("Error sending file");
-        }
-      }
-    });
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${result.fileName}"`);
+    res.send(result.buffer);
   } catch (err) {
-    console.error("❌ Unexpected error in /file endpoint:", err);
     res.status(500).send("Failed to serve file");
+  }
+});
+
+app.get("/download", async (req, res) => {
+  try {
+    const { path: filePath } = req.query;
+    if (!filePath || typeof filePath !== 'string') return res.status(400).send("Path is required");
+
+    const result = await getFileBuffer(filePath);
+    if (!result) return res.status(404).send("File not found");
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${result.fileName}"`);
+    res.send(result.buffer);
+  } catch (err) {
+    res.status(500).send("Failed to download file");
   }
 });
 
