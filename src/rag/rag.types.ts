@@ -23,6 +23,7 @@ export interface VectorPayload {
 
 export interface IngestOptions {
   source: string;
+  fileName?: string;
   chunkSize?: number;
   overlap?: number;
   apiKey: string;

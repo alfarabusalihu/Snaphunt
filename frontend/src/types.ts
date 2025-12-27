@@ -1,5 +1,5 @@
 export interface Config {
-    apiKey: string; // Gemini RAG Key
+    apiKey: string;
     model: string;
     analysisProvider: 'gemini' | 'openai';
     analysisApiKey?: string;
@@ -7,6 +7,14 @@ export interface Config {
     sourceType: "url" | "file";
     sourceValue: string;
     filterContext: string;
+    maxChunks?: number;
+}
+export interface PreviewFile {
+    id: string;
+    fileName: string;
+    location: string;
+    checksum: string;
+    size?: number;
 }
 
 export interface Chunk {
@@ -30,6 +38,24 @@ export interface QueryResponse {
     pdfs: PdfDocument[];
 }
 
+export interface AnalysisCandidate {
+    source: string;
+    score: number;
+    suitable: boolean;
+    justification: string;
+}
+
+export interface InternalCandidate {
+    source: string;
+    fileName: string;
+    location: string;
+    score: number;
+    analysis?: AnalysisCandidate;
+}
+
 export interface AnalyzeResponse {
-    analysis: string;
+    analysis: {
+        candidates: AnalysisCandidate[];
+        summary: string;
+    };
 }

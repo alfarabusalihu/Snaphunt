@@ -27,5 +27,3 @@ export const analyzeChunksTool = {
     return await answerQuestion(prompt, contextText, apiKey, model);
   },
 };
-
-

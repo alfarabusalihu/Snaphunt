@@ -42,12 +42,10 @@ db.exec(`
 `);
 
 export const registry = {
-    // Sources
     createSource: (id: string, type: string, value: string) => {
         db.prepare('INSERT OR REPLACE INTO sources (id, type, value) VALUES (?, ?, ?)').run(id, type, value);
     },
 
-    // Documents
     getDocByChecksum: (checksum: string) => {
         return db.prepare('SELECT * FROM documents WHERE checksum = ?').get(checksum) as any;
     },
@@ -68,7 +66,6 @@ export const registry = {
         return db.prepare('SELECT * FROM documents').all() as any[];
     },
 
-    // Analysis
     saveAnalysis: (analysis: { id: string, document_id: string, hash: string, score: number, suitable: boolean, report: string }) => {
         db.prepare(`
             INSERT OR REPLACE INTO analysis_results 

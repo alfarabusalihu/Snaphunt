@@ -14,4 +14,3 @@ export async function embedQuery(text: string, apiKey: string): Promise<number[]
 
   return result.embedding.values;
 }
-

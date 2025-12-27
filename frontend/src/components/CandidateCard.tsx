@@ -28,8 +28,8 @@ export const CandidateCard = ({ file, onRemove, isRemovable }: CandidateCardProp
                         {sizeMB && <span className="text-[10px] text-slate-400 font-medium">{sizeMB} MB</span>}
                         {file.status && (
                             <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full ${file.status === 'indexed' ? 'bg-green-50 text-green-600' :
-                                    file.status === 'duplicate' ? 'bg-orange-50 text-orange-600' :
-                                        'bg-blue-50 text-blue-600'
+                                file.status === 'duplicate' ? 'bg-orange-50 text-orange-600' :
+                                    'bg-blue-50 text-blue-600'
                                 }`}>
                                 {file.status}
                             </span>

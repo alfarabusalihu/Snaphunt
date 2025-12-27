@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import type { Config as ConfigType } from '../types';
-import { FileText, ShieldCheck, Zap, X, Sparkles, ChevronRight, Search } from 'lucide-react';
+import type { Config as ConfigType, PreviewFile } from '../types';
+import { FileText, ShieldCheck, Zap, X, Sparkles, ChevronRight, Search, Trash2, RotateCcw } from 'lucide-react';
 import { CandidateCard } from '../components/CandidateCard';
 
 export const Config = () => {
@@ -10,18 +10,22 @@ export const Config = () => {
     const [step, setStep] = useState<1 | 2>(1);
     const [loading, setLoading] = useState(false);
     const [previewLoading, setPreviewLoading] = useState(false);
-    const [selectedFiles, setSelectedFiles] = useState<any[]>([]);
+    const [selectedFiles, setSelectedFiles] = useState<PreviewFile[]>([]);
 
     const [formData, setFormData] = useState<ConfigType>({
         apiKey: localStorage.getItem('snap_rag_key') || '',
-        model: 'gemini-1.5-flash',
+        model: 'gemini-2.0-flash',
         analysisProvider: 'gemini',
         analysisApiKey: localStorage.getItem('snap_analysis_key') || '',
-        analysisModel: 'gemini-1.5-flash',
+        analysisModel: 'gemini-2.0-flash',
         sourceType: 'file',
         sourceValue: '',
-        filterContext: ''
+        filterContext: '',
+        maxChunks: Number(localStorage.getItem('snap_max_chunks')) || 5
     });
+
+    const [availableModels, setAvailableModels] = useState<string[]>([]);
+    const [fetchingModels, setFetchingModels] = useState(false);
 
     const hasConfig = !!localStorage.getItem('snap_config');
 
@@ -33,7 +37,7 @@ export const Config = () => {
             setSelectedFiles(res.files);
             setStep(2);
         } catch (error) {
-            console.error('Preview failed:', error);
+            console.error(error);
             alert('Failed to scan source. Check path and permissions.');
         } finally {
             setPreviewLoading(false);
@@ -42,6 +46,69 @@ export const Config = () => {
 
     const handleRemoveFile = (id: string) => {
         setSelectedFiles(prev => prev.filter(f => f.id !== id));
+    };
+
+    const handleReset = async () => {
+        if (!window.confirm("WARNING: This will purge the entire vector database and clear all document registries. This action cannot be undone. Continue?")) return;
+        setLoading(true);
+        try {
+            await api.reset();
+            localStorage.removeItem('snap_config');
+            setSelectedFiles([]);
+            setStep(1);
+            alert('System reset successful.');
+        } catch (error) {
+            console.error(error);
+            alert('Reset failed.');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const fetchModels = async (provider: string, key: string) => {
+        if (!key) {
+            setAvailableModels([]);
+            return;
+        }
+        setFetchingModels(true);
+        try {
+            const { models } = await api.listModels(provider, key);
+            setAvailableModels(models);
+            if (models.length > 0 && !models.includes(formData.analysisModel || '')) {
+                setFormData(prev => ({ ...prev, analysisModel: models[0], model: models[0] }));
+            }
+        } catch (e) {
+            console.error(e);
+            setAvailableModels([]);
+        } finally {
+            setFetchingModels(false);
+        }
+    };
+
+    useEffect(() => {
+        const key = formData.analysisProvider === 'gemini' ? formData.apiKey : formData.analysisApiKey;
+        if (key) {
+            fetchModels(formData.analysisProvider, key);
+        } else {
+            setAvailableModels([]);
+        }
+    }, [formData.analysisProvider, formData.apiKey, formData.analysisApiKey]);
+
+    const handleBatchSync = async () => {
+        if (selectedFiles.length === 0) return;
+        setLoading(true);
+        try {
+            await api.reset();
+            await api.ingest(formData, selectedFiles);
+            localStorage.setItem('snap_max_chunks', String(formData.maxChunks));
+            localStorage.setItem('snap_config', JSON.stringify(formData));
+            navigate('/');
+        } catch (error) {
+            console.error(error);
+            alert('Batch sync failed.');
+        } finally {
+            setLoading(false);
+        }
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -55,12 +122,13 @@ export const Config = () => {
             if (formData.analysisApiKey) {
                 localStorage.setItem('snap_analysis_key', formData.analysisApiKey);
             }
+            localStorage.setItem('snap_max_chunks', String(formData.maxChunks));
             localStorage.setItem('snap_config', JSON.stringify(formData));
 
             navigate('/');
         } catch (error) {
-            console.error('Configuration failed:', error);
-            alert('Failed to configure system.');
+            console.error(error);
+            alert('Configuration failed.');
         } finally {
             setLoading(false);
         }
@@ -146,13 +214,66 @@ export const Config = () => {
                                         {(['gemini', 'openai'] as const).map(p => (
                                             <button
                                                 key={p}
-                                                onClick={() => setFormData({ ...formData, analysisProvider: p, analysisModel: p === 'gemini' ? 'gemini-1.5-flash' : 'gpt-4o-mini' })}
+                                                onClick={() => setFormData({ ...formData, analysisProvider: p })}
                                                 className={`py-3 px-4 rounded-xl text-xs font-black transition-all capitalize border ${formData.analysisProvider === p ? 'bg-blue-50 border-blue-200 text-blue-600 shadow-sm' : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300'}`}
                                             >
                                                 {p}
                                             </button>
                                         ))}
                                     </div>
+
+                                    <div className="animate-in slide-in-from-top-2 duration-200 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-500 mb-2">Target Model</label>
+                                            <div className="relative">
+                                                <select
+                                                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all appearance-none text-sm font-medium"
+                                                    value={formData.analysisModel}
+                                                    onChange={e => setFormData({ ...formData, analysisModel: e.target.value, model: e.target.value })}
+                                                >
+                                                    {availableModels.length > 0 ? (
+                                                        availableModels.map(m => (
+                                                            <option key={m} value={m}>{m}</option>
+                                                        ))
+                                                    ) : (
+                                                        <option disabled>
+                                                            {fetchingModels ? 'Loading models...' : 'Enter API Key to see models'}
+                                                        </option>
+                                                    )}
+                                                </select>
+                                                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                                                    {fetchingModels ? (
+                                                        <div className="w-3 h-3 border-2 border-slate-200 border-t-blue-500 rounded-full animate-spin" />
+                                                    ) : (
+                                                        <Sparkles size={14} />
+                                                    )}
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-xs font-bold text-slate-500 mb-2 flex items-center justify-between">
+                                                Sustainability Depth
+                                                <span className={`text-[10px] px-2 py-0.5 rounded-full ${formData.maxChunks && formData.maxChunks > 7 ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
+                                                    {formData.maxChunks} chunks
+                                                </span>
+                                            </label>
+                                            <input
+                                                type="range"
+                                                min="1"
+                                                max="15"
+                                                value={formData.maxChunks}
+                                                onChange={e => setFormData({ ...formData, maxChunks: parseInt(e.target.value) })}
+                                                className="w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-600 mt-4"
+                                            />
+                                            <div className="flex justify-between mt-2 text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
+                                                <span>Eco (Fast)</span>
+                                                <span>Balanced</span>
+                                                <span>Deep (Costly)</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
                                     {formData.analysisProvider === 'openai' && (
                                         <div className="animate-in slide-in-from-top-2 duration-200">
                                             <label className="block text-xs font-bold text-slate-500 mb-2">OpenAI Secret Key</label>
@@ -202,6 +323,25 @@ export const Config = () => {
                                 {previewLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <ChevronRight size={18} />}
                                 Scan & Preview Candidates
                             </button>
+
+                            <section className="pt-10 border-t border-slate-50">
+                                <div className="bg-red-50 p-6 rounded-3xl border border-red-100 flex items-center justify-between">
+                                    <div>
+                                        <h4 className="text-[10px] font-black text-red-600 uppercase tracking-widest flex items-center gap-2 mb-1">
+                                            <Trash2 size={12} /> System Management
+                                        </h4>
+                                        <p className="text-[10px] text-red-500/70 font-medium">Purge all vector data and reset registry.</p>
+                                    </div>
+                                    <button
+                                        onClick={handleReset}
+                                        disabled={loading}
+                                        className="p-3 bg-white border border-red-200 text-red-600 rounded-xl hover:bg-red-600 hover:text-white transition-all shadow-sm"
+                                        title="Factory Reset"
+                                    >
+                                        <RotateCcw size={16} />
+                                    </button>
+                                </div>
+                            </section>
                         </div>
                     ) : (
                         <div className="space-y-8">
@@ -210,12 +350,23 @@ export const Config = () => {
                                     <h1 className="text-3xl font-black text-slate-900 mb-2">Prune Pool</h1>
                                     <p className="text-slate-500 text-sm">Refine your candidate collection before indexing.</p>
                                 </div>
-                                <button
-                                    onClick={() => setStep(1)}
-                                    className="text-xs font-bold text-blue-600 hover:bg-blue-50 px-3 py-1.5 rounded-lg transition-colors"
-                                >
-                                    Modify Source
-                                </button>
+                                <div className="flex gap-2">
+                                    {selectedFiles.length >= 10 && (
+                                        <button
+                                            onClick={handleBatchSync}
+                                            disabled={loading}
+                                            className="text-[10px] font-black text-blue-600 bg-blue-50 px-4 py-2 rounded-xl border border-blue-100 hover:bg-blue-600 hover:text-white transition-all"
+                                        >
+                                            🚀 Express Ingest ({selectedFiles.length} files)
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={() => setStep(1)}
+                                        className="text-xs font-bold text-slate-400 hover:bg-slate-100 px-3 py-1.5 rounded-lg transition-colors"
+                                    >
+                                        Modify Source
+                                    </button>
+                                </div>
                             </header>
 
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-h-[300px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-slate-100">
@@ -258,7 +409,7 @@ export const Config = () => {
             </div>
 
             <p className="mt-8 text-slate-400 text-[10px] font-bold uppercase tracking-[0.2em]">
-                Snaphunt Architecture • v2.5.0
+                Snaphunt Architecture • v2.6.0
             </p>
         </div>
     );

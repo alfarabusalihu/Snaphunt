@@ -3,12 +3,10 @@ import { embedQuery } from "./embedding.js";
 import { ensureCollection, storeVectors } from "./vector.js";
 import type { IngestOptions, VectorPayload } from "./rag.types.js";
 
-
 export async function ingestDocument(
   rawText: string,
   options: IngestOptions
 ): Promise<void> {
-
   const chunks = chunkText(rawText, {
     chunkSize: options.chunkSize,
     overlap: options.overlap,
@@ -29,6 +27,7 @@ export async function ingestDocument(
   const payloads: VectorPayload[] = chunks.map((chunk, index) => ({
     text: chunk,
     source: options.source,
+    fileName: options.fileName,
     chunkIndex: index,
   }));
 

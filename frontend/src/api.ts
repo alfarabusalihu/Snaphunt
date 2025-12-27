@@ -1,4 +1,4 @@
-import type { Config, QueryResponse } from './types';
+import type { Config, QueryResponse, Chunk, AnalyzeResponse, PreviewFile } from './types';
 
 const API_BASE = 'http://localhost:3200';
 
@@ -9,11 +9,12 @@ export const api = {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ sourceType, sourceValue })
         });
-        if (!res.ok) throw new Error('Preview failed');
-        return res.json();
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Preview failed');
+        return data;
     },
 
-    async ingest(config: Config, selectedFiles?: any[]) {
+    async ingest(config: Config, selectedFiles?: PreviewFile[]) {
         const res = await fetch(`${API_BASE}/ingest`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -22,29 +23,32 @@ export const api = {
                 apiKey: config.apiKey
             })
         });
-        if (!res.ok) throw new Error('Ingestion failed');
-        return res.json();
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Ingestion failed');
+        return data;
     },
 
-    async query(query: string, apiKey: string): Promise<QueryResponse> {
+    async query(query: string, apiKey: string, maxChunks?: number): Promise<QueryResponse> {
         const res = await fetch(`${API_BASE}/query`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, apiKey })
+            body: JSON.stringify({ query, apiKey, maxChunks })
         });
-        if (!res.ok) throw new Error('Query failed');
-        return res.json();
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Query failed');
+        return data;
     },
 
     async analyze(
-        chunks: any[],
+        chunks: Chunk[],
         apiKey: string,
         model: string,
         question: string,
         analysisProvider: string,
-        analysisApiKey: string,
-        analysisModel: string
-    ) {
+        analysisApiKey?: string,
+        analysisModel?: string,
+        maxChunks?: number
+    ): Promise<AnalyzeResponse> {
         const res = await fetch(`${API_BASE}/analyze`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -55,16 +59,33 @@ export const api = {
                 question,
                 analysisProvider,
                 analysisApiKey,
-                analysisModel
+                analysisModel,
+                maxChunks
             })
         });
-        if (!res.ok) throw new Error('Analysis failed');
-        return res.json();
+        const data = await res.json();
+        if (!res.ok) {
+            console.error('API Error details:', data);
+            throw new Error(data.error || 'Analysis failed');
+        }
+        return data;
+    },
+
+    async listModels(provider: string, apiKey: string): Promise<{ models: string[] }> {
+        const res = await fetch(`${API_BASE}/list-models`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider, apiKey })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to list models');
+        return data;
     },
 
     async reset() {
         const res = await fetch(`${API_BASE}/reset`, { method: 'POST' });
-        if (!res.ok) throw new Error('Reset failed');
-        return res.json();
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Reset failed');
+        return data;
     }
 };

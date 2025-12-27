@@ -1,6 +1,7 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
-
 import { OpenAI } from "openai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { registry } from "../../db.js";
+import crypto from "node:crypto";
 
 export async function answerQuestion(
   prompt: string,
@@ -32,26 +33,82 @@ export async function answerQuestion(
     return response.choices[0].message.content || "No answer generated.";
   }
 
+  let targetModel = model;
+
   const genAI = new GoogleGenerativeAI(apiKey);
-  const geminiModel = genAI.getGenerativeModel({
-    model,
-    generationConfig: {
-      maxOutputTokens: maxTokens,
-      temperature: 0,
+
+  const finalPrompt = prompt.includes(context) ? prompt : `${prompt}\n\nContext:\n${context}`;
+
+  const attemptGeneration = async (modelName: string) => {
+    console.log(`🤖 AI Request: Provider=${provider}, Model=${modelName}, Prompt Length=${finalPrompt.length}`);
+    const geminiModel = genAI.getGenerativeModel({
+      model: modelName,
+      generationConfig: {
+        maxOutputTokens: maxTokens,
+        temperature: 0,
+      }
+    }, { apiVersion: 'v1' });
+
+    const result = await geminiModel.generateContent(finalPrompt);
+    const response = result.response;
+    const text = response.text();
+    if (!text) throw new Error("AI returned empty response text");
+    return text;
+  };
+
+  try {
+    return await attemptGeneration(targetModel);
+  } catch (err: any) {
+    const msg = err.message || String(err);
+
+    if (msg.includes("429") || msg.includes("Quota exceeded") || msg.includes("Too Many Requests")) {
+      let retrySeconds = 60;
+      try {
+        const errorData = JSON.parse(msg.substring(msg.indexOf('{')));
+        const retryInfo = errorData.find?.((d: any) => d['@type']?.includes('RetryInfo'));
+        if (retryInfo?.retryDelay) {
+          retrySeconds = parseInt(retryInfo.retryDelay);
+        }
+      } catch (e) {
+        const match = msg.match(/retry in ([\d.]+)s/i);
+        if (match) retrySeconds = Math.ceil(parseFloat(match[1]));
+      }
+      throw new Error(`RATE_LIMIT:${retrySeconds}`);
     }
-  });
 
-  const fullPrompt = `You are a helpful AI assistant analyzing CVs.
+    if (msg.includes("404") || msg.includes("not found") || msg.includes("not supported")) {
+      console.warn(`⚠️ Model ${targetModel} failed: ${msg}. Attempting exhaustive fallback...`);
 
-${prompt}
+      const variants = [
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash-lite",
+        "gemini-pro"
+      ];
 
-Context:
-${context}`;
+      for (const variant of variants) {
+        if (targetModel.includes(variant)) continue;
+        try {
+          console.log(`🔄 Retrying with fallback: ${variant}`);
+          return await attemptGeneration(variant);
+        } catch (e: any) {
+          const innerMsg = e.message || String(e);
+          if (innerMsg.includes("429") || innerMsg.includes("Quota exceeded")) {
+            console.error("❌ Fallback hit rate limit, stopping loop.");
+            throw e;
+          }
+          console.log(`❌ Fallback ${variant} failed: ${innerMsg}`);
+          continue;
+        }
+      }
+      throw new Error(`AI Generation failed for ${targetModel} and all fallbacks. Check your API key and regional availability.`);
+    }
 
-  const result = await geminiModel.generateContent(fullPrompt);
-  const response = result.response;
-
-  return response.text() || "No answer generated.";
+    console.error("❌ Gemini API Error:", err);
+    if (msg.includes("API_KEY_INVALID")) throw new Error("Invalid Gemini API Key");
+    if (msg.includes("SAFETY")) throw new Error("AI response blocked by safety filters");
+    throw new Error(`AI Generation failed: ${msg}`);
+  }
 }
 
 export async function analyzeTalentPool(
@@ -59,12 +116,57 @@ export async function analyzeTalentPool(
   jobContext: string,
   apiKey: string,
   model: string = "gemini-1.5-flash",
-  provider: 'gemini' | 'openai' = 'gemini'
+  provider: 'gemini' | 'openai' = 'gemini',
+  maxChunks = 5
 ): Promise<any> {
-  const contextText = chunks
+  const jobHash = crypto.createHash('sha256').update(jobContext || 'standard').digest('hex');
+  console.log(`🔍 Analyzing ${chunks.length} chunks against job hash: ${jobHash.substring(0, 8)}`);
+
+  const uniqueSources = Array.from(new Set(chunks.map(c => c.payload.source)));
+  const cachedCandidates: any[] = [];
+  const docsToAnalyze: string[] = [];
+
+  const allDocs = registry.getAllDocuments();
+
+  for (const source of uniqueSources) {
+    const doc = allDocs.find(d => d.location === source || d.file_name === source);
+    if (doc) {
+      const cached = registry.getAnalysisByDocAndHash(doc.id, jobHash);
+      if (cached) {
+        cachedCandidates.push({
+          source: doc.file_name,
+          score: cached.suitability_score,
+          suitable: !!cached.is_suitable,
+          justification: cached.report
+        });
+        continue;
+      }
+    }
+    docsToAnalyze.push(source);
+  }
+
+  if (docsToAnalyze.length === 0 && cachedCandidates.length > 0) {
+    console.log(`🚀 Returning cached analysis for ${cachedCandidates.length} candidates.`);
+    return { candidates: cachedCandidates, summary: "Retrieved from cache." };
+  }
+  console.log(`📝 Chunks indicate ${uniqueSources.length} unique sources. ${docsToAnalyze.length} need new analysis.`);
+
+  const MAX_CHARS = 10000;
+
+  const topChunks = chunks
     .sort((a, b) => b.score - a.score)
+    .slice(0, maxChunks);
+
+  console.log(`✂️ Optimized context: Using top ${topChunks.length} chunks.`);
+
+  let contextText = topChunks
     .map(c => `[${c.payload.source} - chunk ${c.payload.chunkIndex}]\n${c.payload.text}`)
     .join("\n\n");
+
+  if (contextText.length > MAX_CHARS) {
+    console.warn(`📜 Context too long (${contextText.length} chars). Truncating to ${MAX_CHARS}...`);
+    contextText = contextText.substring(0, MAX_CHARS) + "... [Truncated for sustainability]";
+  }
 
   const prompt = `
       You are an expert talent recruiter. Analyze the following CV chunks against this job context: "${jobContext || 'Standard Assessment'}".
@@ -91,7 +193,24 @@ export async function analyzeTalentPool(
   try {
     const jsonMatch = rawResponse.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
+      const analysis = JSON.parse(jsonMatch[0]);
+
+      if (analysis.candidates) {
+        for (const candidate of analysis.candidates) {
+          const doc = allDocs.find(d => d.file_name === candidate.source || d.location === candidate.source);
+          if (doc) {
+            registry.saveAnalysis({
+              id: crypto.randomUUID(),
+              document_id: doc.id,
+              hash: jobHash,
+              score: candidate.score,
+              suitable: candidate.suitable,
+              report: candidate.justification
+            });
+          }
+        }
+      }
+      return analysis;
     }
   } catch (e) {
     console.warn("Failed to parse MCP analysis as JSON, returning raw text wrap.");

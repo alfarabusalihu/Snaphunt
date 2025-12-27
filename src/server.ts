@@ -2,18 +2,10 @@ import dotenv from "dotenv";
 dotenv.config();
 import express from "express";
 import bodyParser from "body-parser";
-
-import { ingestDocument } from "./rag/injestion.js";
-import { parseInput, getFileBuffer } from "./parser/index.js";
-import { crawlBucket } from "./parser/crawler.js";
-import { queryDocuments } from "./query.js";
-import { resetCollection } from "./rag/vector.js";
-import { answerQuestion, analyzeTalentPool } from "./mcp/tools/analyzeCVs.js";
-import { registry } from "./db.js";
+import { getFileBuffer } from "./parser/index.js";
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { OpenAI } from "openai";
 import cors from "cors";
-import path from "node:path";
-import fs from "node:fs";
-
 
 const app = express();
 const PORT = process.env.PORT;
@@ -21,134 +13,113 @@ const PORT = process.env.PORT;
 app.use(cors());
 app.use(bodyParser.json());
 
-// app.get("/", (req, res) => {
-//   res.send(`Backend server running on ${PORT}`);
-// });
+const MCP_URL = `http://localhost:${process.env.MCP_PORT || 3300}`;
 
 app.post("/preview", async (req, res) => {
   try {
-    const { sourceType, sourceValue } = req.body;
-    if (!sourceValue) return res.status(400).json({ error: "sourceValue is required" });
-
-    let targets = sourceType === 'file' ? [sourceValue] : [sourceValue];
-
-    if (sourceType === 'url') {
-      const crawled = await crawlBucket(sourceValue);
-      if (crawled.length > 0) targets = crawled;
-    }
-
-    const files: any[] = [];
-    for (const target of targets) {
-      try {
-        const parsedDocs = await parseInput(target);
-        for (const doc of parsedDocs) {
-          files.push({
-            id: doc.id,
-            fileName: doc.metadata.fileName,
-            location: doc.metadata.location,
-            checksum: doc.checksum,
-            size: doc.metadata.size
-          });
-        }
-      } catch (e) {
-        console.error(`Preview failed for ${target}:`, e);
-      }
-    }
-    res.json({ files });
+    const response = await fetch(`${MCP_URL}/preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body)
+    });
+    const data = await response.json();
+    res.status(response.status).json(data);
   } catch (err) {
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "MCP Server unreachable" });
   }
 });
 
 app.post("/ingest", async (req, res) => {
   try {
-    const { files, apiKey, chunkSize = 500, overlap = 50 } = req.body;
-
-    if (!apiKey) return res.status(400).json({ error: "apiKey is required" });
-    if (!files || !Array.isArray(files)) return res.status(400).json({ error: "files list is required" });
-
-    let successCount = 0;
-    for (const file of files) {
-      try {
-        const parsedDocs = await parseInput(file.location);
-        const doc = parsedDocs.find(d => d.checksum === file.checksum);
-        if (doc) {
-          await ingestDocument(doc.text, {
-            source: doc.metadata.fileName || file.location,
-            chunkSize,
-            overlap,
-            apiKey
-          });
-          successCount++;
-        }
-      } catch (e) {
-        console.error(`Failed to ingest ${file.location}:`, e);
-      }
-    }
-    return res.json({ message: `Ingestion complete. Processed ${successCount}/${files.length} files.` });
+    const response = await fetch(`${MCP_URL}/ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body)
+    });
+    const data = await response.json();
+    res.status(response.status).json(data);
   } catch (err) {
-    if (err instanceof Error) res.status(500).json({ error: err.message });
-    else res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "MCP Server unreachable" });
   }
 });
 
 app.post("/query", async (req, res) => {
   try {
-    const { query, apiKey } = req.body;
-
-    if (!query) return res.status(400).json({ error: "Query is required" });
-    if (!apiKey) return res.status(400).json({ error: "apiKey is required" });
-
-    const result = await queryDocuments(query, apiKey);
-
-    res.json(result);
+    const response = await fetch(`${MCP_URL}/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body)
+    });
+    const data = await response.json();
+    res.status(response.status).json(data);
   } catch (err) {
-    if (err instanceof Error) res.status(500).json({ error: err.message });
-    else res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "MCP Server unreachable" });
   }
 });
 
 app.post("/reset", async (req, res) => {
   try {
-    await resetCollection();
-    res.json({ message: "Vector collection reset successfully." });
+    const response = await fetch(`${MCP_URL}/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body)
+    });
+    const data = await response.json();
+    res.status(response.status).json(data);
   } catch (err) {
-    if (err instanceof Error) res.status(500).json({ error: err.message });
-    else res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "MCP Server unreachable" });
   }
 });
 
-
 app.post("/analyze", async (req, res) => {
   try {
-    const { chunks, apiKey, model, analysisProvider = 'gemini', analysisApiKey, analysisModel, question } = req.body;
-
-    if (!chunks || !Array.isArray(chunks) || chunks.length === 0) {
-      return res.status(400).json({ error: "No chunks provided for analysis." });
-    }
-
-    const effectiveApiKey = analysisProvider === 'gemini' ? (analysisApiKey || apiKey) : analysisApiKey;
-    const effectiveModel = analysisModel || model || (analysisProvider === 'gemini' ? "gemini-1.5-flash" : "gpt-4o-mini");
-
-    if (!effectiveApiKey) {
-      return res.status(400).json({ error: `${analysisProvider} API key is required for analysis.` });
-    }
-
-    console.log(`🧠 Delegating analysis to MCP Tool [${analysisProvider}]`);
-
-    const analysis = await analyzeTalentPool(
-      chunks,
-      question,
-      effectiveApiKey,
-      effectiveModel,
-      analysisProvider as any
-    );
-
-    res.json({ analysis });
-
+    const response = await fetch(`${MCP_URL}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(req.body)
+    });
+    const data = await response.json();
+    res.status(response.status).json(data);
   } catch (err) {
-    if (err instanceof Error) res.status(500).json({ error: err.message });
-    else res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "MCP Server unreachable" });
+  }
+});
+
+app.post("/list-models", async (req, res) => {
+  try {
+    const { provider, apiKey } = req.body;
+    if (!apiKey) return res.status(400).json({ error: "API Key is required" });
+
+    if (provider === 'openai') {
+      const openai = new OpenAI({ apiKey });
+      const response = await openai.models.list();
+      const models = response.data
+        .filter(m => m.id.startsWith('gpt-'))
+        .map(m => m.id);
+      return res.json({ models });
+    }
+
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`);
+    const data = await response.json() as any;
+    if (data.error) throw new Error(data.error.message || "Failed to fetch Gemini models");
+
+    const apiModels = (data.models || [])
+      .filter((m: any) => m.supportedGenerationMethods.includes('generateContent'))
+      .map((m: any) => m.name.replace('models/', ''));
+
+    const essentialModels = [
+      'gemini-2.0-flash',
+      'gemini-2.5-flash',
+      'gemini-2.0-flash-lite',
+      'gemini-1.5-flash',
+      'gemini-pro'
+    ];
+    const models = Array.from(new Set([...essentialModels, ...apiModels])).sort();
+
+    res.json({ models });
+  } catch (err: any) {
+    console.error("❌ Failed to list models:", err);
+    res.status(500).json({ error: String(err) });
   }
 });
 
@@ -183,7 +154,6 @@ app.get("/download", async (req, res) => {
     res.status(500).send("Failed to download file");
   }
 });
-
 
 app.listen(PORT, () => {
   console.log(`Backend server running on http://localhost:${PORT}`);

@@ -3,32 +3,114 @@ dotenv.config();
 import express from "express";
 import bodyParser from "body-parser";
 import { queryPdfsTool } from "./tools/queryTool.js";
-import { analyzeChunksTool } from "./tools/analyzeTool.js";
-
+import { analyzeTalentPool } from "./tools/analyzeCVs.js";
+import { parseInput, scanInput } from "../parser/index.js";
+import { ingestDocument } from "../rag/injestion.js";
+import { resetCollection } from "../rag/vector.js";
+import { crawlBucket } from "../parser/crawler.js";
 
 const app = express();
 app.use(bodyParser.json());
-const PORT = process.env.MCP_PORT;
+const PORT = process.env.MCP_PORT || 3300;
 
-app.post("/query_pdfs", async (req, res) => {
+app.post("/preview", async (req, res) => {
   try {
-    const { query, apiKey } = req.body;
-    const result = await queryPdfsTool.run({ query, apiKey });
-    res.json(result);
-  } catch (err: unknown) {
-    if (err instanceof Error) res.status(500).json({ error: err.message });
-    else res.status(500).json({ error: String(err) });
+    const { sourceType, sourceValue: rawSource } = req.body;
+    const sourceValue = rawSource?.replace(/^["'](.*)["']$/, '$1').trim();
+
+    let targets = sourceType === 'file' ? [sourceValue] : [sourceValue];
+    if (sourceType === 'url') {
+      const crawled = await crawlBucket(sourceValue);
+      if (crawled.length > 0) targets = crawled;
+    }
+    const files = [];
+    for (const target of targets) {
+      try {
+        const scannedDocs = await scanInput(target);
+        for (const doc of scannedDocs) {
+          files.push({
+            id: doc.id,
+            fileName: doc.fileName,
+            location: doc.location,
+            checksum: doc.checksum,
+            size: doc.size
+          });
+        }
+      } catch (e) {
+        console.error(`Preview failed for ${target}:`, e);
+      }
+    }
+    res.json({ files });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
   }
 });
 
-app.post("/analyze_chunks", async (req, res) => {
+app.post("/ingest", async (req, res) => {
   try {
-    const { chunks, apiKey, model, question } = req.body;
-    const result = await analyzeChunksTool.run({ chunks, apiKey, model, question });
-    res.json({ analysis: result });
+    const { files, apiKey, chunkSize = 500, overlap = 50 } = req.body;
+    let successCount = 0;
+    for (const file of files) {
+      try {
+        const parsedDocs = await parseInput(file.location);
+        const doc = parsedDocs[0];
+        if (doc) {
+          await ingestDocument(doc.text, {
+            source: file.location,
+            fileName: doc.metadata.fileName || file.fileName,
+            chunkSize,
+            overlap,
+            apiKey
+          });
+          successCount++;
+        }
+      } catch (e) {
+        console.error(`Failed to ingest ${file.location}:`, e);
+      }
+    }
+    res.json({ message: `Ingestion complete. Processed ${successCount}/${files.length} files.` });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/query", async (req, res) => {
+  try {
+    const { query, apiKey, maxChunks } = req.body;
+    const result = await queryPdfsTool.run({ query, apiKey, topK: maxChunks });
+    res.json(result);
   } catch (err: unknown) {
-    if (err instanceof Error) res.status(500).json({ error: err.message });
-    else res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/analyze", async (req, res) => {
+  try {
+    const { chunks, apiKey, model, analysisProvider = 'gemini', analysisApiKey, analysisModel, question, maxChunks = 5 } = req.body;
+    const effectiveApiKey = analysisProvider === 'gemini' ? (analysisApiKey || apiKey) : analysisApiKey;
+    const effectiveModel = analysisModel || model || (analysisProvider === 'gemini' ? "gemini-1.5-flash" : "gpt-4o-mini");
+
+    const analysis = await analyzeTalentPool(
+      chunks,
+      question,
+      effectiveApiKey,
+      effectiveModel,
+      analysisProvider as any,
+      maxChunks
+    );
+    res.json({ analysis });
+  } catch (err: any) {
+    console.error("❌ Analysis failed in MCP:", err);
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+app.post("/reset", async (req, res) => {
+  try {
+    await resetCollection();
+    res.json({ message: "Vector collection reset successfully." });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
   }
 });
 

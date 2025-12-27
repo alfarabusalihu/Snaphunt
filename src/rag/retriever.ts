@@ -7,8 +7,6 @@ export async function retrieveRelevantChunks(
   topK = 5
 ) {
   const queryEmbedding = await embedQuery(query, apiKey);
-
   const results = await searchVectors(queryEmbedding, topK);
-
   return results;
 }

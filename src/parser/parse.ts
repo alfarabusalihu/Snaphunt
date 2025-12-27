@@ -17,4 +17,3 @@ export async function parsePdf(buffer: Buffer): Promise<string> {
 
     return text;
 }
-
