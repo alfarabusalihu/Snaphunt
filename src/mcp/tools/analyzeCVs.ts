@@ -1,7 +1,10 @@
 import { OpenAI } from "openai";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { registry } from "../../db.js";
-import crypto from "node:crypto";
+import * as crypto from "node:crypto";
+import { sleep } from "../../utils.js";
+
+let globalRateLimitUntil = 0;
 
 export async function answerQuestion(
   prompt: string,
@@ -11,6 +14,12 @@ export async function answerQuestion(
   provider: 'gemini' | 'openai' = 'gemini',
   maxTokens = 1500
 ): Promise<string> {
+  const now = Date.now();
+  if (now < globalRateLimitUntil) {
+    const remaining = Math.ceil((globalRateLimitUntil - now) / 1000);
+    throw new Error(`RATE_LIMIT:${remaining}`);
+  }
+
   if (!context?.trim()) {
     return "No context provided for analysis.";
   }
@@ -37,10 +46,10 @@ export async function answerQuestion(
 
   const genAI = new GoogleGenerativeAI(apiKey);
 
-  const finalPrompt = prompt.includes(context) ? prompt : `${prompt}\n\nContext:\n${context}`;
+  const finalPrompt = prompt.includes(context.substring(0, 100)) ? prompt : `${prompt}\n\nContext:\n${context}`;
 
   const attemptGeneration = async (modelName: string) => {
-    console.log(`🤖 AI Request: Provider=${provider}, Model=${modelName}, Prompt Length=${finalPrompt.length}`);
+    console.log(`📡 [Gemini] Generation Request: Model=${modelName}, Prompt=${finalPrompt.length} chars`);
     const geminiModel = genAI.getGenerativeModel({
       model: modelName,
       generationConfig: {
@@ -65,43 +74,44 @@ export async function answerQuestion(
       let retrySeconds = 60;
       try {
         const errorData = JSON.parse(msg.substring(msg.indexOf('{')));
-        const retryInfo = errorData.find?.((d: any) => d['@type']?.includes('RetryInfo'));
+        const retryInfo = errorData.error?.details?.find?.((d: any) => d['@type']?.includes('RetryInfo'));
         if (retryInfo?.retryDelay) {
           retrySeconds = parseInt(retryInfo.retryDelay);
         }
       } catch (e) {
         const match = msg.match(/retry in ([\d.]+)s/i);
         if (match) retrySeconds = Math.ceil(parseFloat(match[1]));
+        else if (msg.includes("limit for 2.0-flash")) retrySeconds = 60;
       }
+
+      globalRateLimitUntil = Date.now() + (retrySeconds * 1000);
       throw new Error(`RATE_LIMIT:${retrySeconds}`);
     }
 
+    // Handle Model Not Found (404) or similar errors -> Fallback
     if (msg.includes("404") || msg.includes("not found") || msg.includes("not supported")) {
-      console.warn(`⚠️ Model ${targetModel} failed: ${msg}. Attempting exhaustive fallback...`);
+      console.warn(`⚠️ Model ${targetModel} failed: ${msg}. Attempting safety fallbacks...`);
 
       const variants = [
         "gemini-2.0-flash",
-        "gemini-2.5-flash",
-        "gemini-2.0-flash-lite",
+        "gemini-1.5-flash",
         "gemini-pro"
       ];
 
       for (const variant of variants) {
-        if (targetModel.includes(variant)) continue;
+        if (targetModel === variant) continue;
         try {
           console.log(`🔄 Retrying with fallback: ${variant}`);
           return await attemptGeneration(variant);
         } catch (e: any) {
           const innerMsg = e.message || String(e);
-          if (innerMsg.includes("429") || innerMsg.includes("Quota exceeded")) {
-            console.error("❌ Fallback hit rate limit, stopping loop.");
-            throw e;
+          if (innerMsg.includes("429") || innerMsg.includes("Quota exceeded") || innerMsg.includes("Too Many Requests")) {
+            globalRateLimitUntil = Date.now() + (60 * 1000);
+            throw new Error(`RATE_LIMIT:60`);
           }
           console.log(`❌ Fallback ${variant} failed: ${innerMsg}`);
-          continue;
         }
       }
-      throw new Error(`AI Generation failed for ${targetModel} and all fallbacks. Check your API key and regional availability.`);
     }
 
     console.error("❌ Gemini API Error:", err);
@@ -109,6 +119,8 @@ export async function answerQuestion(
     if (msg.includes("SAFETY")) throw new Error("AI response blocked by safety filters");
     throw new Error(`AI Generation failed: ${msg}`);
   }
+
+  throw new Error("AI Generation failed after max retries.");
 }
 
 export async function analyzeTalentPool(
@@ -120,7 +132,8 @@ export async function analyzeTalentPool(
   maxChunks = 5
 ): Promise<any> {
   const jobHash = crypto.createHash('sha256').update(jobContext || 'standard').digest('hex');
-  console.log(`🔍 Analyzing ${chunks.length} chunks against job hash: ${jobHash.substring(0, 8)}`);
+  const requestId = crypto.randomBytes(4).toString('hex');
+  console.log(`🔍 [Backend] [${requestId}] Analyzing ${chunks.length} chunks against job hash: ${jobHash.substring(0, 8)}`);
 
   const uniqueSources = Array.from(new Set(chunks.map(c => c.payload.source)));
   const cachedCandidates: any[] = [];
@@ -153,11 +166,14 @@ export async function analyzeTalentPool(
 
   const MAX_CHARS = 10000;
 
-  const topChunks = chunks
+  // OPTIMIZATION: Filter chunks to ONLY those that need analysis
+  const filteredChunks = chunks.filter(c => docsToAnalyze.includes(c.payload.source));
+
+  const topChunks = filteredChunks
     .sort((a, b) => b.score - a.score)
     .slice(0, maxChunks);
 
-  console.log(`✂️ Optimized context: Using top ${topChunks.length} chunks.`);
+  console.log(`✂️ Optimized context: Using top ${topChunks.length} chunks (Filtered from ${chunks.length}).`);
 
   let contextText = topChunks
     .map(c => `[${c.payload.source} - chunk ${c.payload.chunkIndex}]\n${c.payload.text}`)

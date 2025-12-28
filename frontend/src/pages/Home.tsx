@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { api } from '../api';
 import type { Config as ConfigType, QueryResponse, InternalCandidate, AnalysisCandidate } from '../types';
 import { BrainCircuit, Settings, FileText, Download, Eye, Sparkles, Filter, User, RotateCcw } from 'lucide-react';
 import { PdfViewer } from '../components/PdfViewer';
+import { useToast } from '../components/Toast';
 
 export const Home = () => {
     const navigate = useNavigate();
+    const location = useLocation();
     const [config, setConfig] = useState<ConfigType | null>(null);
     const [jobDesc, setJobDesc] = useState('');
     const [results, setResults] = useState<QueryResponse | null>(null);
@@ -14,8 +16,29 @@ export const Home = () => {
     const [analysis, setAnalysis] = useState<{ candidates: AnalysisCandidate[], summary: string } | null>(null);
     const [pdfPath, setPdfPath] = useState<string | null>(null);
     const [showOnlySuitable, setShowOnlySuitable] = useState(true);
-    const [retryTimer, setRetryTimer] = useState<number | null>(null);
+    const [retryTimer, setRetryTimer] = useState<number | null>(() => {
+        const saved = localStorage.getItem('snap_retry_timer');
+        const savedTime = localStorage.getItem('snap_retry_timestamp');
+        if (saved && savedTime) {
+            const elapsed = Math.floor((Date.now() - parseInt(savedTime)) / 1000);
+            const remaining = parseInt(saved) - elapsed;
+            return remaining > 0 ? remaining : null;
+        }
+        return null;
+    });
+
     const [searchCooldown, setSearchCooldown] = useState(false);
+    const { showToast, ToastContainer } = useToast();
+
+    useEffect(() => {
+        if (retryTimer !== null) {
+            localStorage.setItem('snap_retry_timer', retryTimer.toString());
+            localStorage.setItem('snap_retry_timestamp', Date.now().toString());
+        } else {
+            localStorage.removeItem('snap_retry_timer');
+            localStorage.removeItem('snap_retry_timestamp');
+        }
+    }, [retryTimer]);
 
     useEffect(() => {
         if (retryTimer && retryTimer > 0) {
@@ -33,25 +56,39 @@ export const Home = () => {
         } else {
             const parsed = JSON.parse(saved);
             setConfig(parsed);
-            if (parsed.filterContext) {
-                handleQuery(parsed.filterContext, parsed.apiKey, parsed.maxChunks);
+
+            // Pull results from navigation state (freshly from Config) or fallback to last saved results
+            if (location.state?.initialResults) {
+                setResults(location.state.initialResults);
+            } else {
+                const lastResults = localStorage.getItem('snap_last_results');
+                if (lastResults) {
+                    setResults(JSON.parse(lastResults));
+                }
             }
         }
-    }, [navigate]);
+    }, [navigate, location.state]);
 
     const handleQuery = async (query: string, key: string, maxChunks?: number) => {
+        if (!query || !key) return;
+        setSearchCooldown(true);
         try {
             const res = await api.query(query, key, maxChunks);
             setResults(res);
-            setSearchCooldown(true);
-            setTimeout(() => setSearchCooldown(false), 3000);
+            localStorage.setItem('snap_last_results', JSON.stringify(res));
+            showToast('Ranking updated successfully', 'success');
         } catch (e) {
             console.error(e);
+            showToast('Failed to refresh ranking', 'error');
+        } finally {
+            setTimeout(() => setSearchCooldown(false), 2000);
         }
     };
 
     const handleAnalyze = async () => {
-        if (!config || !results?.chunks) return;
+        if (!config || !results?.chunks || analyzing || retryTimer !== null) return;
+        const now = new Date().toISOString();
+        console.log(`🚀 [Frontend] [${now}] handleAnalyze triggered`);
         setAnalyzing(true);
         try {
             const res = await api.analyze(
@@ -66,13 +103,17 @@ export const Home = () => {
             );
             setAnalysis(res.analysis);
         } catch (e: any) {
-            const msg = e.message || String(e);
-            if (msg.includes('RATE_LIMIT:')) {
-                const match = msg.match(/RATE_LIMIT:(\d+)/);
-                setRetryTimer(match ? parseInt(match[1]) : 60);
+            const fullMsg = e.message || String(e);
+            console.error(`❌ [Frontend] Analysis error:`, fullMsg);
+
+            if (fullMsg.includes('RATE_LIMIT:')) {
+                const match = fullMsg.match(/RATE_LIMIT:(\d+)/);
+                const seconds = match ? parseInt(match[1]) : 60;
+                console.log(`⏱️ [Frontend] Setting retry timer to ${seconds}s`);
+                setRetryTimer(seconds);
             } else {
-                console.error(e);
-                alert('Analysis failed');
+                console.error(`❌ [Frontend] Critical Analysis error:`, fullMsg);
+                showToast('Deep Analysis failed. Please check your credentials.', 'error');
             }
         } finally {
             setAnalyzing(false);
@@ -80,7 +121,7 @@ export const Home = () => {
     };
 
     const handleDownload = (path: string) => {
-        window.open(`http://localhost:3200/download?path=${encodeURIComponent(path)}`, '_blank');
+        window.open(`http://localhost:3400/download?path=${encodeURIComponent(path)}`, '_blank');
     };
 
     const candidates = results?.chunks.reduce((acc: InternalCandidate[], chunk) => {
@@ -129,6 +170,14 @@ export const Home = () => {
                             <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
                                 <Filter size={14} /> Requirement Context
                             </h3>
+                            <button
+                                onClick={() => config && handleQuery(jobDesc || config.filterContext, config.apiKey, config.maxChunks)}
+                                disabled={searchCooldown || !config}
+                                className="text-[9px] font-black text-blue-600 hover:text-blue-700 uppercase tracking-widest flex items-center gap-1.5 transition-all disabled:opacity-30"
+                            >
+                                <RotateCcw size={12} className={searchCooldown ? 'animate-spin' : ''} />
+                                Refresh Rank
+                            </button>
                         </div>
                         <textarea
                             className="w-full h-48 px-6 py-5 bg-slate-50 border border-slate-100 rounded-3xl outline-none focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm leading-relaxed placeholder:text-slate-300 resize-none shadow-inner"
@@ -156,10 +205,16 @@ export const Home = () => {
                     </section>
 
                     {retryTimer !== null && (
-                        <div className="p-4 bg-orange-50 border border-orange-100 rounded-2xl flex items-center gap-3 text-orange-700 animate-pulse">
-                            <RotateCcw size={18} className="animate-spin-slow" />
-                            <div className="text-xs font-bold">
-                                Quota Exceeded. Please retry in <span className="text-sm font-black underline">{retryTimer}s</span>
+                        <div className="p-6 bg-red-50 border-2 border-red-200 rounded-3xl flex flex-col items-center gap-4 text-red-700 animate-bounce shadow-lg">
+                            <RotateCcw size={32} className="animate-spin-slow text-red-500" />
+                            <div className="text-center">
+                                <div className="text-sm font-black uppercase tracking-widest mb-1">Quota Exceeded</div>
+                                <div className="text-2xl font-black">
+                                    Retry in <span className="underline">{retryTimer}s</span>
+                                </div>
+                                <p className="text-[10px] opacity-70 mt-2 leading-tight">
+                                    Gemini free tier allows limited requests.<br />Wait for the countdown to finish.
+                                </p>
                             </div>
                         </div>
                     )}
@@ -269,10 +324,12 @@ export const Home = () => {
 
             {pdfPath && (
                 <PdfViewer
-                    url={pdfPath.startsWith('http') ? pdfPath : `http://localhost:3200/file?path=${encodeURIComponent(pdfPath)}`}
+                    url={pdfPath.startsWith('http') ? pdfPath : `http://localhost:3400/file?path=${encodeURIComponent(pdfPath)}`}
                     onClose={() => setPdfPath(null)}
                 />
             )}
+
+            <ToastContainer />
         </div>
     );
 };

@@ -1,43 +1,20 @@
-import { parseInput } from "../../parser/index.js";
-import { ingestDocument } from "../../rag/injestion.js";
-import { crawlBucket } from "../../parser/crawler.js";
+import { parseInput as internalParse } from "../parser/index.js";
+import { ingestDocument as internalIngest } from "../rag/injestion.js";
 
 export const ingestTool = {
-    name: "crawl_and_ingest",
-    description: "Crawl a source (LocalPath, URL, ZIP) and ingest candidates into the vector database.",
-    run: async (args: { source: string; apiKey: string; chunkSize?: number; overlap?: number }) => {
-        const { source, apiKey, chunkSize = 500, overlap = 50 } = args;
-
-        let targets = source.startsWith('http') ? [source] : [source];
-        if (source.startsWith('http')) {
-            const crawled = await crawlBucket(source);
-            if (crawled.length > 0) targets = crawled;
+    name: "ingest_cvs",
+    description: "Parse and ingest CVs into vector database",
+    run: async (args: { location: string; apiKey: string; chunkSize?: number; overlap?: number }) => {
+        const docs = await internalParse(args.location);
+        for (const doc of docs) {
+            await internalIngest(doc.text, {
+                source: args.location,
+                fileName: doc.metadata.fileName,
+                chunkSize: args.chunkSize,
+                overlap: args.overlap,
+                apiKey: args.apiKey
+            });
         }
-
-        let successCount = 0;
-        const details = [];
-
-        for (const target of targets) {
-            try {
-                const parsedDocs = await parseInput(target);
-                for (const doc of parsedDocs) {
-                    await ingestDocument(doc.text, {
-                        source: doc.metadata.fileName || target,
-                        chunkSize,
-                        overlap,
-                        apiKey
-                    });
-                    successCount++;
-                    details.push({ file: doc.metadata.fileName, status: 'success' });
-                }
-            } catch (e) {
-                details.push({ file: target, status: 'error', error: String(e) });
-            }
-        }
-
-        return {
-            message: `Processed ${successCount} documents.`,
-            details
-        };
-    }
+        return { status: "success", count: docs.length };
+    },
 };

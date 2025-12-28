@@ -1,0 +1,12 @@
+{
+    "watch": [
+        "src/**/*.ts"
+    ],
+    "ignore": [
+        "data/*",
+        "C:/Users/Lenovo/.gemini/**/*",
+        "temp_uploads/*"
+    ],
+    "ext": "ts,js,json",
+    "delay": "2500"
+}

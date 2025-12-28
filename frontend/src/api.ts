@@ -1,6 +1,6 @@
 import type { Config, QueryResponse, Chunk, AnalyzeResponse, PreviewFile } from './types';
 
-const API_BASE = 'http://localhost:3200';
+const API_BASE = 'http://localhost:3400';
 
 export const api = {
     async preview(sourceType: string, sourceValue: string) {
@@ -71,15 +71,41 @@ export const api = {
         return data;
     },
 
-    async listModels(provider: string, apiKey: string): Promise<{ models: string[] }> {
+    async listModels(provider: string, apiKey: string, signal?: AbortSignal) {
         const res = await fetch(`${API_BASE}/list-models`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider, apiKey })
+            body: JSON.stringify({ provider, apiKey }),
+            signal
         });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to list models');
-        return data;
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || 'Failed to list models');
+        }
+        return res.json();
+    },
+
+    async getSources(): Promise<{ sources: any[] }> {
+        const res = await fetch(`${API_BASE}/sources`);
+        if (!res.ok) throw new Error('Failed to fetch past collections');
+        return res.json();
+    },
+
+    async getSourceDocuments(sourceId: string): Promise<{ documents: any[] }> {
+        const res = await fetch(`${API_BASE}/sources/${sourceId}/documents`);
+        if (!res.ok) throw new Error('Failed to fetch documents for collection');
+        return res.json();
+    },
+
+    async uploadFile(file: File): Promise<{ path: string, fileName: string }> {
+        const formData = new FormData();
+        formData.append('file', file);
+        const res = await fetch(`${API_BASE}/upload`, {
+            method: 'POST',
+            body: formData
+        });
+        if (!res.ok) throw new Error('Upload failed');
+        return res.json();
     },
 
     async reset() {

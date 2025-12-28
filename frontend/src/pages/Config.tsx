@@ -2,8 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import type { Config as ConfigType, PreviewFile } from '../types';
-import { FileText, ShieldCheck, Zap, X, Sparkles, ChevronRight, Search, Trash2, RotateCcw } from 'lucide-react';
+import {
+    FileText, ShieldCheck, Zap, X, Sparkles, ChevronRight,
+    Search, Trash2, RotateCcw, History, Upload
+} from 'lucide-react';
 import { CandidateCard } from '../components/CandidateCard';
+import { Modal } from '../components/Modal';
+import { useToast } from '../components/Toast';
+import { debounce } from '../utils';
 
 export const Config = () => {
     const navigate = useNavigate();
@@ -26,6 +32,12 @@ export const Config = () => {
 
     const [availableModels, setAvailableModels] = useState<string[]>([]);
     const [fetchingModels, setFetchingModels] = useState(false);
+    const [modelError, setModelError] = useState<string | null>(null);
+    const [pastSources, setPastSources] = useState<any[]>([]);
+    const [showHistory, setShowHistory] = useState(false);
+    const [isDragging, setIsDragging] = useState(false);
+    const [showResetModal, setShowResetModal] = useState(false);
+    const { showToast, ToastContainer } = useToast();
 
     const hasConfig = !!localStorage.getItem('snap_config');
 
@@ -49,50 +61,135 @@ export const Config = () => {
     };
 
     const handleReset = async () => {
-        if (!window.confirm("WARNING: This will purge the entire vector database and clear all document registries. This action cannot be undone. Continue?")) return;
+        setShowResetModal(false);
         setLoading(true);
         try {
             await api.reset();
             localStorage.removeItem('snap_config');
             setSelectedFiles([]);
             setStep(1);
-            alert('System reset successful.');
+            showToast('System reset successful.', 'success');
         } catch (error) {
             console.error(error);
-            alert('Reset failed.');
+            showToast('Reset failed.', 'error');
         } finally {
             setLoading(false);
         }
     };
 
-    const fetchModels = async (provider: string, key: string) => {
-        if (!key) {
-            setAvailableModels([]);
-            return;
-        }
-        setFetchingModels(true);
+    const handleFetchSources = async () => {
         try {
-            const { models } = await api.listModels(provider, key);
-            setAvailableModels(models);
-            if (models.length > 0 && !models.includes(formData.analysisModel || '')) {
-                setFormData(prev => ({ ...prev, analysisModel: models[0], model: models[0] }));
-            }
+            const res = await api.getSources();
+            setPastSources(res.sources);
+            setShowHistory(true);
         } catch (e) {
-            console.error(e);
-            setAvailableModels([]);
-        } finally {
-            setFetchingModels(false);
+            showToast('Failed to fetch history', 'error');
         }
     };
 
+    const handleSelectCollection = async (source: any) => {
+        setLoading(true);
+        try {
+            const res = await api.getSourceDocuments(source.id);
+            const previewFiles = res.documents.map((d: any) => ({
+                id: d.id,
+                fileName: d.file_name,
+                location: d.location,
+                size: 0,
+                checksum: d.checksum
+            }));
+            setSelectedFiles(previewFiles);
+            setFormData(prev => ({ ...prev, sourceValue: source.value, sourceType: source.type }));
+            setStep(2);
+            setShowHistory(false);
+            showToast(`Loaded collection: ${source.value}`, 'success');
+        } catch (e) {
+            showToast('Failed to load collection documents', 'error');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleDrop = async (e: React.DragEvent) => {
+        e.preventDefault();
+        setIsDragging(false);
+        const files = Array.from(e.dataTransfer.files);
+        const file = files[0];
+        if (!file) return;
+
+        setLoading(true);
+        try {
+            const { path: uploadedPath } = await api.uploadFile(file);
+            setFormData(prev => ({ ...prev, sourceType: 'file', sourceValue: uploadedPath }));
+            showToast(`Uploaded: ${file.name}`, 'success');
+
+            // Trigger preview automatically for dropped files
+            const res = await api.preview('file', uploadedPath);
+            setSelectedFiles(res.files);
+            setStep(2);
+        } catch (e) {
+            showToast('Failed to process dropped file.', 'error');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const fetchModels = React.useCallback(async (provider: string, key: string, signal?: AbortSignal) => {
+        if (!key || key.length < 10) {
+            console.log('ℹ️ [Frontend] API Key too short or empty, clearing models');
+            setAvailableModels([]);
+            setModelError(null);
+            setFetchingModels(false);
+            return;
+        }
+
+        console.log(`🔍 [Frontend] Requesting models for ${provider}...`);
+        setFetchingModels(true);
+        setModelError(null);
+
+        try {
+            const { models } = await api.listModels(provider, key, signal);
+            console.log(`✅ [Frontend] Received ${models.length} models`);
+            setAvailableModels(models);
+
+            // Auto-select first model if current one is not in the list
+            setFormData(prev => {
+                const currentModel = prev.analysisModel;
+                if (models.length > 0 && !models.includes(currentModel || '')) {
+                    return { ...prev, analysisModel: models[0], model: models[0] };
+                }
+                return prev;
+            });
+        } catch (e: any) {
+            if (e.name === 'AbortError') return;
+            console.error('❌ Model fetch error:', e);
+            setAvailableModels([]);
+            setModelError(e.message || 'Failed to fetch models');
+        } finally {
+            setFetchingModels(false);
+        }
+    }, []);
+
+    const debouncedFetchRef = React.useRef(
+        debounce((provider: string, key: string, signal: AbortSignal) => {
+            fetchModels(provider, key, signal);
+        }, 800)
+    );
+
     useEffect(() => {
         const key = formData.analysisProvider === 'gemini' ? formData.apiKey : formData.analysisApiKey;
-        if (key) {
-            fetchModels(formData.analysisProvider, key);
+        const controller = new AbortController();
+
+        if (key && key.length >= 10) {
+            debouncedFetchRef.current(formData.analysisProvider, key, controller.signal);
         } else {
             setAvailableModels([]);
+            setFetchingModels(false);
+            setModelError(null);
         }
-    }, [formData.analysisProvider, formData.apiKey, formData.analysisApiKey]);
+
+        return () => controller.abort();
+    }, [formData.analysisProvider, formData.apiKey, formData.analysisApiKey, fetchModels]);
 
     const handleBatchSync = async () => {
         if (selectedFiles.length === 0) return;
@@ -102,10 +199,11 @@ export const Config = () => {
             await api.ingest(formData, selectedFiles);
             localStorage.setItem('snap_max_chunks', String(formData.maxChunks));
             localStorage.setItem('snap_config', JSON.stringify(formData));
-            navigate('/');
+            showToast('Batch sync complete!', 'success');
+            setTimeout(() => navigate('/'), 1000);
         } catch (error) {
             console.error(error);
-            alert('Batch sync failed.');
+            showToast('Batch sync failed.', 'error');
         } finally {
             setLoading(false);
         }
@@ -125,10 +223,28 @@ export const Config = () => {
             localStorage.setItem('snap_max_chunks', String(formData.maxChunks));
             localStorage.setItem('snap_config', JSON.stringify(formData));
 
-            navigate('/');
+            // Perform initial semantic search strictly under user click
+            try {
+                const initialResults = await api.query(formData.filterContext, formData.apiKey, formData.maxChunks);
+                localStorage.setItem('snap_last_results', JSON.stringify(initialResults));
+                showToast('Configurations saved and synced!', 'success');
+                setTimeout(() => navigate('/', { state: { initialResults } }), 1000);
+            } catch (queryError: any) {
+                const msg = queryError.message || String(queryError);
+                if (msg.includes('RATE_LIMIT:')) {
+                    const match = msg.match(/RATE_LIMIT:(\d+)/);
+                    const seconds = match ? parseInt(match[1]) : 60;
+                    localStorage.setItem('snap_retry_timer', seconds.toString());
+                    localStorage.setItem('snap_retry_timestamp', Date.now().toString());
+                    showToast(`Config saved, but Gemini quota reached. Wait ${seconds}s to see results.`, 'error');
+                    setTimeout(() => navigate('/'), 1500);
+                } else {
+                    throw queryError;
+                }
+            }
         } catch (error) {
             console.error(error);
-            alert('Configuration failed.');
+            showToast('Configuration failed.', 'error');
         } finally {
             setLoading(false);
         }
@@ -244,11 +360,18 @@ export const Config = () => {
                                                 <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
                                                     {fetchingModels ? (
                                                         <div className="w-3 h-3 border-2 border-slate-200 border-t-blue-500 rounded-full animate-spin" />
+                                                    ) : modelError ? (
+                                                        <span className="text-red-500 text-[10px] font-bold">!</span>
                                                     ) : (
                                                         <Sparkles size={14} />
                                                     )}
                                                 </div>
                                             </div>
+                                            {modelError && (
+                                                <p className="text-[10px] text-red-500 mt-1 font-medium animate-in fade-in slide-in-from-top-1">
+                                                    {modelError}
+                                                </p>
+                                            )}
                                         </div>
 
                                         <div>
@@ -289,11 +412,24 @@ export const Config = () => {
                                 </div>
 
                                 <div className="space-y-4 pt-4 border-t border-slate-50">
-                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                                        <FileText size={14} /> Knowledge Source
-                                    </h3>
-                                    <div className="bg-slate-50 p-6 rounded-2xl border border-slate-100 flex flex-col gap-4 shadow-inner">
-                                        <div className="flex gap-2">
+                                    <div className="flex justify-between items-center">
+                                        <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                                            <FileText size={14} /> Knowledge Source
+                                        </h3>
+                                        <button
+                                            onClick={handleFetchSources}
+                                            className="text-[10px] font-black text-blue-600 hover:text-blue-700 flex items-center gap-1.5 transition-colors"
+                                        >
+                                            <History size={12} /> View History
+                                        </button>
+                                    </div>
+                                    <div
+                                        className={`bg-slate-50 p-6 rounded-2xl border transition-all ${isDragging ? 'border-blue-500 bg-blue-50/50 scale-[1.02]' : 'border-slate-100 shadow-inner'}`}
+                                        onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
+                                        onDragLeave={() => setIsDragging(false)}
+                                        onDrop={handleDrop}
+                                    >
+                                        <div className="flex gap-2 mb-4">
                                             {(['file', 'url'] as const).map(t => (
                                                 <button
                                                     key={t}
@@ -304,13 +440,16 @@ export const Config = () => {
                                                 </button>
                                             ))}
                                         </div>
-                                        <input
-                                            type="text"
-                                            className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all text-sm"
-                                            value={formData.sourceValue}
-                                            onChange={e => setFormData({ ...formData, sourceValue: e.target.value })}
-                                            placeholder={formData.sourceType === 'file' ? "e.g. C:/Resumes or MyFiles.zip" : "e.g. s3://bucket/data.xml"}
-                                        />
+                                        <div className="relative">
+                                            <input
+                                                type="text"
+                                                className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all text-sm pr-10"
+                                                value={formData.sourceValue}
+                                                onChange={e => setFormData({ ...formData, sourceValue: e.target.value })}
+                                                placeholder={formData.sourceType === 'file' ? "e.g. C:/Resumes or drop ZIP here" : "e.g. s3://bucket/data.xml"}
+                                            />
+                                            <Upload className={`absolute right-4 top-1/2 -translate-y-1/2 transition-colors ${isDragging ? 'text-blue-500' : 'text-slate-300'}`} size={16} />
+                                        </div>
                                     </div>
                                 </div>
                             </section>
@@ -333,7 +472,7 @@ export const Config = () => {
                                         <p className="text-[10px] text-red-500/70 font-medium">Purge all vector data and reset registry.</p>
                                     </div>
                                     <button
-                                        onClick={handleReset}
+                                        onClick={() => setShowResetModal(true)}
                                         disabled={loading}
                                         className="p-3 bg-white border border-red-200 text-red-600 rounded-xl hover:bg-red-600 hover:text-white transition-all shadow-sm"
                                         title="Factory Reset"
@@ -411,6 +550,60 @@ export const Config = () => {
             <p className="mt-8 text-slate-400 text-[10px] font-bold uppercase tracking-[0.2em]">
                 Snaphunt Architecture • v2.6.0
             </p>
+
+            <ToastContainer />
+
+            <Modal
+                isOpen={showResetModal}
+                title="Explosive Reset"
+                description="This will purge the entire vector database and clear all document registries. This action cannot be undone. Are you sure you want to proceed?"
+                confirmText="Purge System"
+                variant="danger"
+                onConfirm={handleReset}
+                onCancel={() => setShowResetModal(false)}
+            />
+
+            {showHistory && (
+                <div className="fixed inset-0 z-[10000] flex items-center justify-center p-6">
+                    <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-300" onClick={() => setShowHistory(false)} />
+                    <div className="relative w-full max-w-2xl bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-100 flex flex-col animate-in slide-in-from-top-2 duration-300 max-h-[80vh]">
+                        <div className="p-8 border-b border-slate-50 flex justify-between items-center">
+                            <div>
+                                <h3 className="text-xl font-black text-slate-900">Collection History</h3>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Select a past intelligence source</p>
+                            </div>
+                            <button onClick={() => setShowHistory(false)} className="p-2 hover:bg-slate-50 rounded-xl text-slate-300 transition-colors">
+                                <X size={20} />
+                            </button>
+                        </div>
+                        <div className="p-4 overflow-y-auto space-y-2">
+                            {pastSources.length > 0 ? pastSources.map(s => (
+                                <button
+                                    key={s.id}
+                                    onClick={() => handleSelectCollection(s)}
+                                    className="w-full p-4 rounded-2xl border border-slate-100 hover:border-blue-200 hover:bg-blue-50/50 transition-all flex items-center justify-between group"
+                                >
+                                    <div className="flex items-center gap-4">
+                                        <div className="w-10 h-10 rounded-xl bg-slate-50 flex items-center justify-center text-slate-400 group-hover:bg-blue-100 group-hover:text-blue-600 transition-colors">
+                                            {s.type === 'file' ? <FileText size={18} /> : <Search size={18} />}
+                                        </div>
+                                        <div className="text-left">
+                                            <div className="text-sm font-black text-slate-700 truncate max-w-[300px]">{s.value}</div>
+                                            <div className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter mt-0.5">{new Date(s.created_at).toLocaleDateString()} • {s.type}</div>
+                                        </div>
+                                    </div>
+                                    <ChevronRight size={18} className="text-slate-300 group-hover:text-blue-500 transition-colors" />
+                                </button>
+                            )) : (
+                                <div className="py-20 text-center">
+                                    <History size={48} className="mx-auto text-slate-100 mb-4" />
+                                    <p className="text-slate-400 text-sm font-medium">No previous collections found.</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

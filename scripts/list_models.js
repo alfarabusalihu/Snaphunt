@@ -3,29 +3,43 @@ import dotenv from "dotenv";
 dotenv.config();
 
 async function listModels() {
-    const apiKey = process.env.GEMINI_API_KEY || process.argv[2];
+    const apiKey = process.argv[2] || process.env.GEMINI_API_KEY;
+
     if (!apiKey) {
-        console.error("No API key provided.");
+        console.error("❌ Error: No API key provided.");
+        console.log("Usage: node scripts/list_models.js <YOUR_API_KEY>");
+        console.log("Or set GEMINI_API_KEY in your .env file.");
         return;
     }
 
+    console.log(`🔍 Checking Gemini API key: ${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}`);
+
     try {
-        const genAI = new GoogleGenerativeAI(apiKey);
-        // The listModels method is on the genAI instance
-        // Note: SDK version 0.24.1 listModels:
         const response = await fetch(`https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`);
         const data = await response.json();
 
-        console.log("--- Available Gemini Models ---");
-        if (data.models) {
+        if (data.error) {
+            console.error("❌ API Error:");
+            console.error(`- Status: ${data.error.status}`);
+            console.error(`- Message: ${data.error.message}`);
+            return;
+        }
+
+        console.log("\n✅ Success! Available Gemini Models:");
+        console.log("-----------------------------------");
+        if (data.models && data.models.length > 0) {
             data.models.forEach(m => {
-                console.log(`${m.name} [${m.supportedGenerationMethods.join(', ')}]`);
+                const methods = m.supportedGenerationMethods.join(', ');
+                const isFlash = m.name.includes('flash');
+                const emoji = isFlash ? '⚡' : '🧠';
+                console.log(`${emoji} ${m.name.replace('models/', '')}`);
+                console.log(`   Methods: [${methods}]`);
             });
         } else {
-            console.log("No models found or error in response:", data);
+            console.log("No models found in the response.");
         }
     } catch (error) {
-        console.error("Failed to list models:", error);
+        console.error("❌ Connection Failed:", error.message);
     }
 }
 

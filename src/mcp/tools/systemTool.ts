@@ -1,4 +1,5 @@
-import { resetCollection } from "../../rag/vector.js";
+import { resetCollection } from "../rag/vector.js";
+
 
 export const systemTool = {
     name: "reset_system",
