@@ -7,14 +7,10 @@ export const qdrant = new QdrantClient({
     url: "http://localhost:6333"
 });
 
-export async function ensureCollection(
-    embeddingSize: number
-): Promise<void> {
+export async function ensureCollection(embeddingSize: number): Promise<void> {
     const collections = await qdrant.getCollections();
 
-    const exists = collections.collections.some(
-        (c) => c.name === COLLECTION_NAME
-    );
+    const exists = collections.collections.some((c) => c.name === COLLECTION_NAME);
 
     if (!exists) {
         await qdrant.createCollection(COLLECTION_NAME, {
@@ -34,10 +30,7 @@ export async function resetCollection(): Promise<void> {
     }
 }
 
-export async function storeVectors(
-    embeddings: number[][],
-    payloads: VectorPayload[]
-): Promise<void> {
+export async function storeVectors(embeddings: number[][], payloads: VectorPayload[]): Promise<void> {
     if (embeddings.length !== payloads.length) {
         throw new Error(
             "Embeddings count must match payloads count"
@@ -53,15 +46,7 @@ export async function storeVectors(
     });
 }
 
-export async function searchVectors(
-    queryEmbedding: number[],
-    limit = 5
-): Promise<
-    {
-        score: number;
-        payload: VectorPayload | null;
-    }[]
-> {
+export async function searchVectors(queryEmbedding: number[], limit = 5): Promise<{ score: number; payload: VectorPayload | null; }[]> {
     const results = await qdrant.search(COLLECTION_NAME, {
         vector: queryEmbedding,
         limit,
@@ -73,3 +58,17 @@ export async function searchVectors(
         payload: item.payload as VectorPayload | null
     }));
 }
+
+export async function getLatestChunks(limit = 2): Promise<{ score: number; payload: VectorPayload | null; }[]> {
+    const response = await qdrant.scroll(COLLECTION_NAME, {
+        limit,
+        with_payload: true,
+        with_vector: false
+    });
+
+    return response.points.map((item) => ({
+        score: 1.0, // Default score since it's not a search
+        payload: item.payload as VectorPayload | null
+    }));
+}
+

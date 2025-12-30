@@ -44,10 +44,8 @@ export const api = {
         apiKey: string,
         model: string,
         question: string,
-        analysisProvider: string,
-        analysisApiKey?: string,
-        analysisModel?: string,
-        maxChunks?: number
+        tier: 'basic' | 'pro',
+        requestId?: string
     ): Promise<AnalyzeResponse> {
         const res = await fetch(`${API_BASE}/analyze`, {
             method: 'POST',
@@ -57,10 +55,8 @@ export const api = {
                 apiKey,
                 model,
                 question,
-                analysisProvider,
-                analysisApiKey,
-                analysisModel,
-                maxChunks
+                tier,
+                requestId
             })
         });
         const data = await res.json();
@@ -112,6 +108,13 @@ export const api = {
         const res = await fetch(`${API_BASE}/reset`, { method: 'POST' });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Reset failed');
+        return data;
+    },
+
+    async deleteSource(sourceId: string) {
+        const res = await fetch(`${API_BASE}/sources/${sourceId}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to delete source');
         return data;
     }
 };

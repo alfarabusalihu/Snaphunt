@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { api } from '../api';
 import type { Config as ConfigType, QueryResponse, InternalCandidate, AnalysisCandidate } from '../types';
@@ -96,10 +96,7 @@ export const Home = () => {
                 config.apiKey,
                 config.model,
                 jobDesc || config.filterContext,
-                config.analysisProvider,
-                config.analysisApiKey,
-                config.analysisModel,
-                config.maxChunks
+                config.tier
             );
             setAnalysis(res.analysis);
         } catch (e: any) {
@@ -149,8 +146,8 @@ export const Home = () => {
         : candidates;
 
     return (
-        <div className="min-h-screen bg-[#f8fafc] flex">
-            <div className="w-[450px] border-r border-slate-200 bg-white flex flex-col h-screen sticky top-0">
+        <div className="min-h-screen bg-[#f8fafc] flex flex-col lg:flex-row">
+            <div className="w-full lg:w-[450px] border-r border-slate-200 bg-white flex flex-col h-auto lg:h-screen lg:sticky lg:top-0">
                 <header className="p-8 border-b border-slate-50 flex justify-between items-center">
                     <div className="flex items-center gap-3">
                         <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">S</div>
@@ -232,7 +229,7 @@ export const Home = () => {
                 </div>
             </div>
 
-            <main className="flex-1 p-12 overflow-y-auto">
+            <main className="flex-1 p-6 md:p-12 overflow-y-auto">
                 <header className="mb-12 flex justify-between items-end">
                     <div>
                         <h2 className="text-4xl font-black text-slate-900 mb-2">Talent Pool</h2>

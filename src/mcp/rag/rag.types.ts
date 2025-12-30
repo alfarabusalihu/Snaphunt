@@ -17,6 +17,7 @@ export interface IngestOptions {
     chunkSize?: number;
     overlap?: number;
     apiKey: string;
+    requestId?: string;
 }
 
 export interface RetrievalResult {

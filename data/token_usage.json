@@ -1,0 +1,7 @@
+{
+  "tokensPerMinute": 5,
+  "requestsPerMinute": 1,
+  "lastResetTime": 1767114277838,
+  "globalCooldownUntil": 1767108779738,
+  "grandTotalTokens": 6927
+}

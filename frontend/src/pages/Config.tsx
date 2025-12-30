@@ -19,11 +19,9 @@ export const Config = () => {
     const [selectedFiles, setSelectedFiles] = useState<PreviewFile[]>([]);
 
     const [formData, setFormData] = useState<ConfigType>({
-        apiKey: localStorage.getItem('snap_rag_key') || '',
-        model: 'gemini-2.0-flash',
-        analysisProvider: 'gemini',
-        analysisApiKey: localStorage.getItem('snap_analysis_key') || '',
-        analysisModel: 'gemini-2.0-flash',
+        apiKey: localStorage.getItem('snap_master_key') || '',
+        model: 'gemini-2.5-flash',
+        tier: 'basic',
         sourceType: 'file',
         sourceValue: '',
         filterContext: '',
@@ -110,6 +108,19 @@ export const Config = () => {
         }
     };
 
+    const handleDeleteCollection = async (e: React.MouseEvent, sourceId: string) => {
+        e.stopPropagation();
+        if (!confirm('Are you sure you want to remove this collection from history?')) return;
+
+        try {
+            await api.deleteSource(sourceId);
+            setPastSources(prev => prev.filter(s => s.id !== sourceId));
+            showToast('Collection removed from history', 'success');
+        } catch (e) {
+            showToast('Failed to delete collection', 'error');
+        }
+    };
+
     const handleDrop = async (e: React.DragEvent) => {
         e.preventDefault();
         setIsDragging(false);
@@ -134,36 +145,34 @@ export const Config = () => {
         }
     };
 
-    const fetchModels = React.useCallback(async (provider: string, key: string, signal?: AbortSignal) => {
-        if (!key || key.length < 10) {
-            console.log('ℹ️ [Frontend] API Key too short or empty, clearing models');
+    const fetchModels = React.useCallback(async (apiKey: string, signal?: AbortSignal) => {
+        if (!apiKey || apiKey.length < 10) {
             setAvailableModels([]);
             setModelError(null);
             setFetchingModels(false);
             return;
         }
 
+        const provider = apiKey.startsWith('AIza') ? 'gemini' : (apiKey.startsWith('sk-') ? 'openai' : 'unknown');
+        if (provider === 'unknown') return;
+
         console.log(`🔍 [Frontend] Requesting models for ${provider}...`);
         setFetchingModels(true);
         setModelError(null);
 
         try {
-            const { models } = await api.listModels(provider, key, signal);
-            console.log(`✅ [Frontend] Received ${models.length} models`);
+            const { models } = await api.listModels(provider, apiKey, signal);
             setAvailableModels(models);
 
-            // Auto-select first model if current one is not in the list
             setFormData(prev => {
-                const currentModel = prev.analysisModel;
-                if (models.length > 0 && !models.includes(currentModel || '')) {
-                    return { ...prev, analysisModel: models[0], model: models[0] };
+                const currentModel = prev.model;
+                if (models.length > 0 && !models.includes(currentModel)) {
+                    return { ...prev, model: models[0] };
                 }
                 return prev;
             });
         } catch (e: any) {
             if (e.name === 'AbortError') return;
-            console.error('❌ Model fetch error:', e);
-            setAvailableModels([]);
             setModelError(e.message || 'Failed to fetch models');
         } finally {
             setFetchingModels(false);
@@ -171,25 +180,22 @@ export const Config = () => {
     }, []);
 
     const debouncedFetchRef = React.useRef(
-        debounce((provider: string, key: string, signal: AbortSignal) => {
-            fetchModels(provider, key, signal);
+        debounce((key: string, signal: AbortSignal) => {
+            fetchModels(key, signal);
         }, 800)
     );
 
     useEffect(() => {
-        const key = formData.analysisProvider === 'gemini' ? formData.apiKey : formData.analysisApiKey;
         const controller = new AbortController();
-
-        if (key && key.length >= 10) {
-            debouncedFetchRef.current(formData.analysisProvider, key, controller.signal);
+        if (formData.apiKey) {
+            debouncedFetchRef.current(formData.apiKey, controller.signal);
         } else {
             setAvailableModels([]);
             setFetchingModels(false);
             setModelError(null);
         }
-
         return () => controller.abort();
-    }, [formData.analysisProvider, formData.apiKey, formData.analysisApiKey, fetchModels]);
+    }, [formData.apiKey, fetchModels]);
 
     const handleBatchSync = async () => {
         if (selectedFiles.length === 0) return;
@@ -216,35 +222,27 @@ export const Config = () => {
             await api.reset();
             await api.ingest(formData, selectedFiles);
 
-            localStorage.setItem('snap_rag_key', formData.apiKey);
-            if (formData.analysisApiKey) {
-                localStorage.setItem('snap_analysis_key', formData.analysisApiKey);
-            }
+            localStorage.setItem('snap_master_key', formData.apiKey);
             localStorage.setItem('snap_max_chunks', String(formData.maxChunks));
             localStorage.setItem('snap_config', JSON.stringify(formData));
 
-            // Perform initial semantic search strictly under user click
-            try {
-                const initialResults = await api.query(formData.filterContext, formData.apiKey, formData.maxChunks);
-                localStorage.setItem('snap_last_results', JSON.stringify(initialResults));
-                showToast('Configurations saved and synced!', 'success');
-                setTimeout(() => navigate('/', { state: { initialResults } }), 1000);
-            } catch (queryError: any) {
-                const msg = queryError.message || String(queryError);
-                if (msg.includes('RATE_LIMIT:')) {
-                    const match = msg.match(/RATE_LIMIT:(\d+)/);
-                    const seconds = match ? parseInt(match[1]) : 60;
-                    localStorage.setItem('snap_retry_timer', seconds.toString());
-                    localStorage.setItem('snap_retry_timestamp', Date.now().toString());
-                    showToast(`Config saved, but Gemini quota reached. Wait ${seconds}s to see results.`, 'error');
-                    setTimeout(() => navigate('/'), 1500);
-                } else {
-                    throw queryError;
-                }
-            }
-        } catch (error) {
+            const initialResults = await api.query(formData.filterContext, formData.apiKey, formData.maxChunks);
+            localStorage.setItem('snap_last_results', JSON.stringify(initialResults));
+            showToast('Configurations saved and synced!', 'success');
+            setTimeout(() => navigate('/', { state: { initialResults } }), 1000);
+        } catch (error: any) {
             console.error(error);
-            showToast('Configuration failed.', 'error');
+            const msg = error.message || String(error);
+            if (msg.includes('RATE_LIMIT:')) {
+                const match = msg.match(/RATE_LIMIT:(\d+)/);
+                const seconds = match ? parseInt(match[1]) : 60;
+                localStorage.setItem('snap_retry_timer', seconds.toString());
+                localStorage.setItem('snap_retry_timestamp', Date.now().toString());
+                showToast(`Config saved, but Gemini quota reached. Wait ${seconds}s to see results.`, 'error');
+                setTimeout(() => navigate('/'), 1500);
+            } else {
+                showToast('Configuration failed.', 'error');
+            }
         } finally {
             setLoading(false);
         }
@@ -297,7 +295,7 @@ export const Config = () => {
                     </div>
                 </div>
 
-                <div className="md:col-span-8 p-10 lg:p-14 max-h-[90vh] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-100">
+                <div className="md:col-span-8 p-6 sm:p-10 lg:p-14 max-h-[90vh] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-100">
                     {step === 1 ? (
                         <div className="space-y-8">
                             <header className="mb-10">
@@ -311,41 +309,54 @@ export const Config = () => {
                                         <ShieldCheck size={14} /> Intelligence Key
                                     </h3>
                                     <div>
-                                        <label className="block text-xs font-bold text-slate-500 mb-2">Master Gemini API Key</label>
+                                        <label className="block text-xs font-bold text-slate-500 mb-2">Master AI Key (Gemini or OpenAI)</label>
                                         <input
                                             type="password"
                                             className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all placeholder:text-slate-300 text-sm"
                                             value={formData.apiKey}
-                                            onChange={e => setFormData({ ...formData, apiKey: e.target.value, analysisApiKey: formData.analysisProvider === 'gemini' ? e.target.value : formData.analysisApiKey })}
-                                            placeholder="Enter Google AI Studio Key"
+                                            onChange={e => setFormData({ ...formData, apiKey: e.target.value })}
+                                            placeholder="Enter AIza... or sk-..."
                                         />
                                     </div>
                                 </div>
 
-                                <div className="space-y-4 pt-4 border-t border-slate-50">
+                                <div className="space-y-6 pt-6 border-t border-slate-50">
                                     <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                                        <Sparkles size={14} className="text-orange-400" /> Analysis Provider
+                                        <Sparkles size={14} className="text-orange-400" /> Analysis Configuration
                                     </h3>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        {(['gemini', 'openai'] as const).map(p => (
-                                            <button
-                                                key={p}
-                                                onClick={() => setFormData({ ...formData, analysisProvider: p })}
-                                                className={`py-3 px-4 rounded-xl text-xs font-black transition-all capitalize border ${formData.analysisProvider === p ? 'bg-blue-50 border-blue-200 text-blue-600 shadow-sm' : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300'}`}
-                                            >
-                                                {p}
-                                            </button>
-                                        ))}
-                                    </div>
 
-                                    <div className="animate-in slide-in-from-top-2 duration-200 grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                        <div>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                                        <div className="space-y-2">
+                                            <label className="block text-xs font-bold text-slate-500 mb-2 flex items-center justify-between">
+                                                Analysis Tier
+                                                <span className={`text-[9px] px-2 py-0.5 rounded-full font-black uppercase ${formData.tier === 'pro' ? 'bg-purple-50 text-purple-600' : 'bg-blue-50 text-blue-600'}`}>
+                                                    {formData.tier} Plan
+                                                </span>
+                                            </label>
+                                            <div className="grid grid-cols-2 gap-2">
+                                                {(['basic', 'pro'] as const).map(t => (
+                                                    <button
+                                                        key={t}
+                                                        type="button"
+                                                        onClick={() => setFormData({ ...formData, tier: t })}
+                                                        className={`py-2 px-3 rounded-xl text-[10px] font-black transition-all capitalize border ${formData.tier === t ? 'bg-slate-900 border-slate-900 text-white shadow-lg' : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300'}`}
+                                                    >
+                                                        {t}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                            <p className="text-[9px] text-slate-400 mt-1 italic">
+                                                {formData.tier === 'pro' ? 'Higher token limits & deeper analysis depth.' : 'Standard analysis speed and limits.'}
+                                            </p>
+                                        </div>
+
+                                        <div className="space-y-2">
                                             <label className="block text-xs font-bold text-slate-500 mb-2">Target Model</label>
                                             <div className="relative">
                                                 <select
                                                     className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all appearance-none text-sm font-medium"
-                                                    value={formData.analysisModel}
-                                                    onChange={e => setFormData({ ...formData, analysisModel: e.target.value, model: e.target.value })}
+                                                    value={formData.model}
+                                                    onChange={e => setFormData({ ...formData, model: e.target.value })}
                                                 >
                                                     {availableModels.length > 0 ? (
                                                         availableModels.map(m => (
@@ -373,42 +384,7 @@ export const Config = () => {
                                                 </p>
                                             )}
                                         </div>
-
-                                        <div>
-                                            <label className="block text-xs font-bold text-slate-500 mb-2 flex items-center justify-between">
-                                                Sustainability Depth
-                                                <span className={`text-[10px] px-2 py-0.5 rounded-full ${formData.maxChunks && formData.maxChunks > 7 ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
-                                                    {formData.maxChunks} chunks
-                                                </span>
-                                            </label>
-                                            <input
-                                                type="range"
-                                                min="1"
-                                                max="15"
-                                                value={formData.maxChunks}
-                                                onChange={e => setFormData({ ...formData, maxChunks: parseInt(e.target.value) })}
-                                                className="w-full h-2 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-blue-600 mt-4"
-                                            />
-                                            <div className="flex justify-between mt-2 text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
-                                                <span>Eco (Fast)</span>
-                                                <span>Balanced</span>
-                                                <span>Deep (Costly)</span>
-                                            </div>
-                                        </div>
                                     </div>
-
-                                    {formData.analysisProvider === 'openai' && (
-                                        <div className="animate-in slide-in-from-top-2 duration-200">
-                                            <label className="block text-xs font-bold text-slate-500 mb-2">OpenAI Secret Key</label>
-                                            <input
-                                                type="password"
-                                                className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all placeholder:text-slate-300 text-sm"
-                                                value={formData.analysisApiKey}
-                                                onChange={e => setFormData({ ...formData, analysisApiKey: e.target.value })}
-                                                placeholder="sk-..."
-                                            />
-                                        </div>
-                                    )}
                                 </div>
 
                                 <div className="space-y-4 pt-4 border-t border-slate-50">
@@ -555,9 +531,9 @@ export const Config = () => {
 
             <Modal
                 isOpen={showResetModal}
-                title="Explosive Reset"
-                description="This will purge the entire vector database and clear all document registries. This action cannot be undone. Are you sure you want to proceed?"
-                confirmText="Purge System"
+                title="Cleansing Reset"
+                description="This will purge the current vector database and clear active configurations. Collection history will remain intact. Proceed?"
+                confirmText="Reset Session"
                 variant="danger"
                 onConfirm={handleReset}
                 onCancel={() => setShowResetModal(false)}
@@ -592,7 +568,16 @@ export const Config = () => {
                                             <div className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter mt-0.5">{new Date(s.created_at).toLocaleDateString()} • {s.type}</div>
                                         </div>
                                     </div>
-                                    <ChevronRight size={18} className="text-slate-300 group-hover:text-blue-500 transition-colors" />
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={(e) => handleDeleteCollection(e, s.id)}
+                                            className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                                            title="Delete from history"
+                                        >
+                                            <Trash2 size={16} />
+                                        </button>
+                                        <ChevronRight size={18} className="text-slate-300 group-hover:text-blue-500 transition-colors" />
+                                    </div>
                                 </button>
                             )) : (
                                 <div className="py-20 text-center">

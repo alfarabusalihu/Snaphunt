@@ -1,20 +1,15 @@
 import { embedQuery } from "./embedding.js";
 import { searchVectors } from "./vector.js";
 
-
-export async function retrieveRelevantChunks(
-    query: string,
-    apiKey: string,
-    topK = 5
-) {
-    const queryEmbedding = await embedQuery(query, apiKey);
+export async function retrieveRelevantChunks(query: string, apiKey: string, requestId?: string, topK = 5) {
+    const queryEmbedding = await embedQuery(query, apiKey, requestId);
     const results = await searchVectors(queryEmbedding, topK);
     return results;
 }
 
-export async function queryDocuments(input: string, apiKey: string, options?: { topK?: number }) {
+export async function queryDocuments(input: string, apiKey: string, options?: { topK?: number, requestId?: string }) {
     if (!input.trim()) throw new Error("Query cannot be empty");
-    const queryEmbedding = await embedQuery(input, apiKey);
+    const queryEmbedding = await embedQuery(input, apiKey, options?.requestId);
     const chunkResults = await searchVectors(queryEmbedding, options?.topK ?? 30);
 
     const pdfMap: Record<string, any> = {};

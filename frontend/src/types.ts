@@ -1,9 +1,7 @@
 export interface Config {
     apiKey: string;
     model: string;
-    analysisProvider: 'gemini' | 'openai';
-    analysisApiKey?: string;
-    analysisModel?: string;
+    tier: 'basic' | 'pro';
     sourceType: "url" | "file";
     sourceValue: string;
     filterContext: string;

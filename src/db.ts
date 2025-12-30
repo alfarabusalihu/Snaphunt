@@ -22,5 +22,18 @@ export const registry = {
     getSources: () => db.prepare('SELECT * FROM sources ORDER BY created_at DESC').all() as any[],
     getDocsBySource: (id: string) => db.prepare('SELECT * FROM documents WHERE source_id = ?').all(id) as any[],
     saveAnalysis: (a: any) => db.prepare('INSERT OR REPLACE INTO analysis_results (id, document_id, job_description_hash, suitability_score, is_suitable, report) VALUES (?, ?, ?, ?, ?, ?)').run(a.id, a.document_id, a.hash, a.score, a.suitable ? 1 : 0, a.report),
-    getAnalysisByDocAndHash: (id: string, h: string) => db.prepare('SELECT * FROM analysis_results WHERE document_id = ? AND job_description_hash = ?').get(id, h) as any
+    getAnalysisByDocAndHash: (id: string, h: string) => db.prepare('SELECT * FROM analysis_results WHERE document_id = ? AND job_description_hash = ?').get(id, h) as any,
+    clearAll: () => {
+        db.prepare('DELETE FROM analysis_results').run();
+        db.prepare('DELETE FROM documents').run();
+        db.prepare('DELETE FROM sources').run();
+    },
+    deleteSource: (id: string) => {
+        db.prepare('DELETE FROM analysis_results WHERE document_id IN (SELECT id FROM documents WHERE source_id = ?)').run(id);
+        db.prepare('DELETE FROM documents WHERE source_id = ?').run(id);
+        db.prepare('DELETE FROM sources WHERE id = ?').run(id);
+    },
+    resetIndexStatus: () => {
+        db.prepare('UPDATE documents SET is_indexed = 0').run();
+    }
 };

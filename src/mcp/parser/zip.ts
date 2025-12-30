@@ -5,10 +5,7 @@ import * as path from "node:path";
 import { parsePdf } from "./parse.js";
 import { ParsedDocument, calculateChecksum } from "./index.js";
 
-export async function parseZip(
-    buffer: Buffer,
-    originalLocation: string
-): Promise<ParsedDocument[]> {
+export async function parseZip(buffer: Buffer,originalLocation: string): Promise<ParsedDocument[]> {
     const zip = new AdmZip(buffer);
     const results: ParsedDocument[] = [];
 

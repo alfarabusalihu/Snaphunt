@@ -1,4 +1,4 @@
-import { answerQuestion } from "../tools/analyzeCVs.js";
+import { answerQuestion, identifyProvider } from "../tools/analyzeCVs.js";
 
 export const analyzeChunksTool = {
   name: "analyze_chunks",
@@ -8,8 +8,10 @@ export const analyzeChunksTool = {
     apiKey: string;
     model?: string;
     question?: string;
+    requestId?: string;
   }) => {
-    const { chunks, apiKey, model = "gpt-4o-mini", question } = args;
+    const { chunks, apiKey, model = "gemini-2.5-flash", question, requestId } = args;
+    console.log(`🛠️ [analyzeTool] Routing through Model=${model}`);
 
     if (!chunks || chunks.length === 0) {
       return "No chunks provided for analysis.";
@@ -24,6 +26,7 @@ export const analyzeChunksTool = {
       ? `${question}\n\nContext:\n${contextText}`
       : `Analyze the following CVs and summarize key information:\n\n${contextText}`;
 
-    return await answerQuestion(prompt, contextText, apiKey, model);
+    const provider = identifyProvider(apiKey);
+    return await answerQuestion(prompt, contextText, apiKey, model, provider === 'openai' ? 'openai' : 'gemini', 1500, requestId);
   },
 };

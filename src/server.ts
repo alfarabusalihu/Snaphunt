@@ -28,21 +28,37 @@ app.post("/preview", async (req: Request, res: Response) => {
 
 app.post("/ingest", async (req: Request, res: Response) => {
   try {
-    const response = await fetch(`${MCP_URL}/ingest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req.body) });
+    const bodyWithId = { ...req.body, requestId: `ingest-${Date.now()}` };
+    const response = await fetch(`${MCP_URL}/ingest`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyWithId) });
     res.status(response.status).json(await response.json());
   } catch (err) { res.status(500).json({ error: "MCP Server unreachable" }); }
 });
 
 app.post("/query", async (req: Request, res: Response) => {
   try {
-    const response = await fetch(`${MCP_URL}/query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req.body) });
+    // Pass requestId to MCP
+    const bodyWithId = { ...req.body, requestId: `req-${Date.now()}` };
+    const response = await fetch(`${MCP_URL}/query`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyWithId) });
     res.status(response.status).json(await response.json());
   } catch (err) { res.status(500).json({ error: "MCP Server unreachable" }); }
 });
 
 app.post("/analyze", async (req: Request, res: Response) => {
   try {
-    const response = await fetch(`${MCP_URL}/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req.body) });
+    const { apiKey, model, tier, question, chunks } = req.body;
+    const bodyWithId = {
+      apiKey,
+      model,
+      tier,
+      question,
+      chunks,
+      requestId: `req-${Date.now()}`
+    };
+    const response = await fetch(`${MCP_URL}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyWithId)
+    });
     res.status(response.status).json(await response.json());
   } catch (err) { res.status(500).json({ error: "MCP Server unreachable" }); }
 });
@@ -56,16 +72,27 @@ app.post("/reset", async (req: Request, res: Response) => {
 
 app.post("/list-models", async (req: Request, res: Response) => {
   try {
-    const { provider, apiKey } = req.body;
+    const { apiKey } = req.body;
     if (!apiKey) return res.status(400).json({ error: "API Key is required" });
-    console.log(`📡 [Gemini] Model List Request: Provider=${provider}`);
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`);
-    if (!response.ok) return res.status(response.status).json({ error: "Google API error" });
-    const data = await response.json() as any;
-    const models = (data.models || [])
-      .filter((m: any) => m.supportedGenerationMethods.includes('generateContent'))
-      .map((m: any) => m.name.replace('models/', ''));
-    res.json({ models: Array.from(new Set(['gemini-1.5-flash', 'gemini-2.0-flash', ...models])).sort() });
+
+    // Dynamically identify provider from the Master Key
+    if (apiKey.startsWith('AIza')) {
+      console.log(`📡 [Gemini] Fetching model list...`);
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+      if (!response.ok) return res.status(response.status).json({ error: "Google API error" });
+      const data = await response.json() as any;
+      const models = (data.models || [])
+        .filter((m: any) => m.supportedGenerationMethods.includes('generateContent'))
+        .map((m: any) => m.name.replace('models/', ''));
+      return res.json({ models: Array.from(new Set(['gemini-2.5-flash', 'gemini-1.5-flash', ...models])).sort() });
+    }
+
+    if (apiKey.startsWith('sk-')) {
+      console.log(`📡 [OpenAI] Returning default stable models...`);
+      return res.json({ models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo'] });
+    }
+
+    res.json({ models: ['gemini-2.5-flash', 'gpt-4o-mini'] }); // Minimal defaults
   } catch (err: any) { res.status(500).json({ error: String(err) }); }
 });
 
@@ -77,6 +104,13 @@ app.get("/sources", async (req: Request, res: Response) => {
 app.get("/sources/:id/documents", async (req: Request, res: Response) => {
   try { res.json({ documents: registry.getDocsBySource(req.params.id) }); }
   catch (err) { res.status(500).json({ error: "Failed to fetch documents" }); }
+});
+
+app.delete("/sources/:id", async (req: Request, res: Response) => {
+  try {
+    const response = await fetch(`${MCP_URL}/sources/${req.params.id}`, { method: 'DELETE' });
+    res.status(response.status).json(await response.json());
+  } catch (err) { res.status(500).json({ error: "MCP Server unreachable" }); }
 });
 
 app.post("/upload", upload.single('file'), (req: any, res: any) => {
