@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { X, CheckCircle2, AlertCircle } from 'lucide-react';
 
 export type ToastType = 'success' | 'error' | 'info';
 
@@ -7,46 +7,34 @@ interface ToastProps {
     message: string;
     type: ToastType;
     onClose: () => void;
-    duration?: number;
 }
 
-export const Toast = ({ message, type, onClose, duration = 5000 }: ToastProps) => {
-    const [isVisible, setIsVisible] = useState(true);
-
+export const Toast = ({ message, type, onClose }: ToastProps) => {
     useEffect(() => {
-        const timer = setTimeout(() => {
-            setIsVisible(false);
-            setTimeout(onClose, 300);
-        }, duration);
-
+        const timer = setTimeout(onClose, 5000);
         return () => clearTimeout(timer);
-    }, [duration, onClose]);
-
-    const icons = {
-        success: <CheckCircle2 className="text-emerald-500" size={18} />,
-        error: <AlertCircle className="text-rose-500" size={18} />,
-        info: <Info className="text-blue-500" size={18} />
-    };
-
-    const colors = {
-        success: 'border-emerald-100 bg-emerald-50/50',
-        error: 'border-rose-100 bg-rose-50/50',
-        info: 'border-blue-100 bg-blue-50/50'
-    };
+    }, [onClose]);
 
     return (
         <div className={`
-            fixed top-6 right-6 z-[9999] flex items-center gap-3 px-4 py-3 
-            rounded-2xl border shadow-xl backdrop-blur-md transition-all duration-300 transform
-            ${isVisible ? 'translate-x-0 opacity-100' : 'translate-x-10 opacity-0'}
-            ${colors[type]}
+            min-w-[320px] p-4 rounded-lg border shadow-lg pointer-events-auto
+            animate-in slide-in-from-right-5 fade-in duration-300
+            flex items-center justify-between gap-4
+            ${type === 'success' ? 'bg-white border-slate-200 text-slate-950' :
+                type === 'error' ? 'bg-rose-600 border-rose-600 text-white' :
+                    'bg-white border-slate-200 text-slate-900'}
         `}>
-            {icons[type]}
-            <p className="text-xs font-bold text-slate-700 pr-4">{message}</p>
-            <button
-                onClick={() => { setIsVisible(false); setTimeout(onClose, 300); }}
-                className="text-slate-400 hover:text-slate-600 transition-colors"
-            >
+            <div className="flex items-center gap-3">
+                {type === 'success' ? (
+                    <CheckCircle2 size={16} className="text-emerald-500" />
+                ) : type === 'error' ? (
+                    <AlertCircle size={16} className="text-white" />
+                ) : (
+                    <div className="w-2 h-2 rounded-full bg-blue-500" />
+                )}
+                <p className="text-sm font-medium tracking-tight">{message}</p>
+            </div>
+            <button onClick={onClose} className="opacity-50 hover:opacity-100 transition-opacity">
                 <X size={14} />
             </button>
         </div>
@@ -61,16 +49,17 @@ export const useToast = () => {
         setToasts(prev => [...prev, { id, message, type }]);
     };
 
-    const removeToast = (id: string) => {
-        setToasts(prev => prev.filter(t => t.id !== id));
-    };
-
     const ToastContainer = () => (
-        <>
-            {toasts.map(t => (
-                <Toast key={t.id} message={t.message} type={t.type} onClose={() => removeToast(t.id)} />
+        <div className="fixed bottom-0 right-0 p-6 z-[20000] flex flex-col gap-3 pointer-events-none">
+            {toasts.map(toast => (
+                <Toast
+                    key={toast.id}
+                    message={toast.message}
+                    type={toast.type}
+                    onClose={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
+                />
             ))}
-        </>
+        </div>
     );
 
     return { showToast, ToastContainer };

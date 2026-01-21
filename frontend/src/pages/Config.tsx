@@ -4,12 +4,13 @@ import { api } from '../api';
 import type { Config as ConfigType, PreviewFile } from '../types';
 import {
     FileText, ShieldCheck, Zap, X, Sparkles, ChevronRight,
-    Search, Trash2, RotateCcw, History, Upload
+    Search, Trash2, RotateCcw, History, Upload, Cpu,
+    AlertCircle, CheckCircle2
 } from 'lucide-react';
+import { getProviderByKey } from '../utils/provider';
 import { CandidateCard } from '../components/CandidateCard';
 import { Modal } from '../components/Modal';
 import { useToast } from '../components/Toast';
-import { debounce } from '../utils';
 
 export const Config = () => {
     const navigate = useNavigate();
@@ -18,23 +19,43 @@ export const Config = () => {
     const [previewLoading, setPreviewLoading] = useState(false);
     const [selectedFiles, setSelectedFiles] = useState<PreviewFile[]>([]);
 
-    const [formData, setFormData] = useState<ConfigType>({
-        apiKey: localStorage.getItem('snap_master_key') || '',
-        model: 'gemini-2.5-flash',
-        tier: 'basic',
-        sourceType: 'file',
-        sourceValue: '',
-        filterContext: '',
-        maxChunks: Number(localStorage.getItem('snap_max_chunks')) || 5
+    const [formData, setFormData] = useState<ConfigType>(() => {
+        const saved = localStorage.getItem('snap_config');
+        if (saved) {
+            try {
+                const parsed = JSON.parse(saved);
+                // Ensure provider is present for backward compatibility
+                if (!parsed.provider) {
+                    parsed.provider = getProviderByKey(parsed.apiKey) || 'google';
+                }
+                return parsed;
+            } catch (e) {
+                console.error("Failed to parse saved config", e);
+            }
+        }
+        return {
+            apiKey: localStorage.getItem('snap_master_key') || '',
+            model: 'gemini-2.5-flash',
+            tier: 'basic',
+            sourceType: 'file',
+            sourceValue: '',
+            filterContext: '',
+            provider: (localStorage.getItem('snap_provider') as any) || 'google',
+            maxChunks: Number(localStorage.getItem('snap_max_chunks')) || 5
+        };
     });
 
-    const [availableModels, setAvailableModels] = useState<string[]>([]);
-    const [fetchingModels, setFetchingModels] = useState(false);
-    const [modelError, setModelError] = useState<string | null>(null);
+
+    const detectedProvider = getProviderByKey(formData.apiKey);
     const [pastSources, setPastSources] = useState<any[]>([]);
     const [showHistory, setShowHistory] = useState(false);
     const [isDragging, setIsDragging] = useState(false);
     const [showResetModal, setShowResetModal] = useState(false);
+    const [showCloseConfirm, setShowCloseConfirm] = useState(false);
+    const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
+    const [previewErrorModal, setPreviewErrorModal] = useState<{ isOpen: boolean, message: string }>({ isOpen: false, message: '' });
+    const [deleteCollectionModal, setDeleteCollectionModal] = useState<{ isOpen: boolean, sourceId: string | null }>({ isOpen: false, sourceId: null });
+
     const { showToast, ToastContainer } = useToast();
 
     const hasConfig = !!localStorage.getItem('snap_config');
@@ -48,7 +69,7 @@ export const Config = () => {
             setStep(2);
         } catch (error) {
             console.error(error);
-            alert('Failed to scan source. Check path and permissions.');
+            setPreviewErrorModal({ isOpen: true, message: 'Failed to scan source. Check path and permissions.' });
         } finally {
             setPreviewLoading(false);
         }
@@ -58,21 +79,24 @@ export const Config = () => {
         setSelectedFiles(prev => prev.filter(f => f.id !== id));
     };
 
-    const handleReset = async () => {
+    const handleClearConfig = () => {
         setShowResetModal(false);
-        setLoading(true);
-        try {
-            await api.reset();
-            localStorage.removeItem('snap_config');
-            setSelectedFiles([]);
-            setStep(1);
-            showToast('System reset successful.', 'success');
-        } catch (error) {
-            console.error(error);
-            showToast('Reset failed.', 'error');
-        } finally {
-            setLoading(false);
-        }
+        localStorage.removeItem('snap_config');
+        localStorage.removeItem('snap_master_key');
+        localStorage.removeItem('snap_last_results');
+        setFormData({
+            apiKey: '',
+            model: 'gemini-2.5-flash',
+            provider: 'google',
+            tier: 'basic',
+            sourceType: 'file',
+            sourceValue: '',
+            filterContext: '',
+            maxChunks: 5
+        });
+        setSelectedFiles([]);
+        setStep(1);
+        showToast('Configurations cleared.', 'success');
     };
 
     const handleFetchSources = async () => {
@@ -108,16 +132,21 @@ export const Config = () => {
         }
     };
 
-    const handleDeleteCollection = async (e: React.MouseEvent, sourceId: string) => {
+    const handleDeleteCollection = (e: React.MouseEvent, sourceId: string) => {
         e.stopPropagation();
-        if (!confirm('Are you sure you want to remove this collection from history?')) return;
+        setDeleteCollectionModal({ isOpen: true, sourceId });
+    };
 
+    const confirmDeleteCollection = async () => {
+        if (!deleteCollectionModal.sourceId) return;
         try {
-            await api.deleteSource(sourceId);
-            setPastSources(prev => prev.filter(s => s.id !== sourceId));
+            await api.deleteSource(deleteCollectionModal.sourceId);
+            setPastSources(prev => prev.filter(s => s.id !== deleteCollectionModal.sourceId));
             showToast('Collection removed from history', 'success');
         } catch (e) {
             showToast('Failed to delete collection', 'error');
+        } finally {
+            setDeleteCollectionModal({ isOpen: false, sourceId: null });
         }
     };
 
@@ -134,7 +163,6 @@ export const Config = () => {
             setFormData(prev => ({ ...prev, sourceType: 'file', sourceValue: uploadedPath }));
             showToast(`Uploaded: ${file.name}`, 'success');
 
-            // Trigger preview automatically for dropped files
             const res = await api.preview('file', uploadedPath);
             setSelectedFiles(res.files);
             setStep(2);
@@ -145,57 +173,16 @@ export const Config = () => {
         }
     };
 
-    const fetchModels = React.useCallback(async (apiKey: string, signal?: AbortSignal) => {
-        if (!apiKey || apiKey.length < 10) {
-            setAvailableModels([]);
-            setModelError(null);
-            setFetchingModels(false);
-            return;
-        }
 
-        const provider = apiKey.startsWith('AIza') ? 'gemini' : (apiKey.startsWith('sk-') ? 'openai' : 'unknown');
-        if (provider === 'unknown') return;
-
-        console.log(`🔍 [Frontend] Requesting models for ${provider}...`);
-        setFetchingModels(true);
-        setModelError(null);
-
-        try {
-            const { models } = await api.listModels(provider, apiKey, signal);
-            setAvailableModels(models);
-
-            setFormData(prev => {
-                const currentModel = prev.model;
-                if (models.length > 0 && !models.includes(currentModel)) {
-                    return { ...prev, model: models[0] };
-                }
-                return prev;
-            });
-        } catch (e: any) {
-            if (e.name === 'AbortError') return;
-            setModelError(e.message || 'Failed to fetch models');
-        } finally {
-            setFetchingModels(false);
-        }
-    }, []);
-
-    const debouncedFetchRef = React.useRef(
-        debounce((key: string, signal: AbortSignal) => {
-            fetchModels(key, signal);
-        }, 800)
-    );
 
     useEffect(() => {
-        const controller = new AbortController();
         if (formData.apiKey) {
-            debouncedFetchRef.current(formData.apiKey, controller.signal);
-        } else {
-            setAvailableModels([]);
-            setFetchingModels(false);
-            setModelError(null);
+            localStorage.setItem('snap_master_key', formData.apiKey);
         }
-        return () => controller.abort();
-    }, [formData.apiKey, fetchModels]);
+        if (formData.provider) {
+            localStorage.setItem('snap_provider', formData.provider);
+        }
+    }, [formData.apiKey, formData.provider]);
 
     const handleBatchSync = async () => {
         if (selectedFiles.length === 0) return;
@@ -223,6 +210,7 @@ export const Config = () => {
             await api.ingest(formData, selectedFiles);
 
             localStorage.setItem('snap_master_key', formData.apiKey);
+            localStorage.setItem('snap_provider', formData.provider || 'google');
             localStorage.setItem('snap_max_chunks', String(formData.maxChunks));
             localStorage.setItem('snap_config', JSON.stringify(formData));
 
@@ -249,211 +237,225 @@ export const Config = () => {
     };
 
     return (
-        <div className="min-h-screen bg-[#f8fafc] flex flex-col items-center justify-center p-6 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:16px_16px]">
-            <div className="max-w-5xl w-full grid grid-cols-1 md:grid-cols-12 gap-0 bg-white rounded-3xl shadow-[0_20px_50px_rgba(0,0,0,0.05)] overflow-hidden border border-slate-100 relative">
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+            <div className="max-w-4xl w-full grid grid-cols-1 md:grid-cols-12 gap-0 bg-white rounded-lg shadow-sm overflow-hidden border border-slate-200 relative">
                 {hasConfig && (
                     <button
-                        onClick={() => navigate('/')}
-                        className="absolute right-6 top-6 text-slate-300 hover:text-slate-600 transition-colors z-10"
+                        onClick={() => {
+                            const currentConfig = JSON.stringify(formData);
+                            const savedConfig = localStorage.getItem('snap_config');
+                            if (currentConfig !== savedConfig) {
+                                setPendingAction(() => () => navigate('/'));
+                                setShowCloseConfirm(true);
+                            } else {
+                                navigate('/');
+                            }
+                        }}
+                        className="absolute right-4 top-4 text-slate-400 hover:text-slate-900 transition-colors z-10 p-2 hover:bg-slate-50 rounded-md"
+                        aria-label="Back to Talent Pool"
                     >
-                        <X size={24} />
+                        <X size={18} aria-hidden="true" />
                     </button>
                 )}
 
-                <div className="md:col-span-4 bg-[#0f172a] p-10 text-white flex flex-col justify-between hidden md:flex">
+                <div className="md:col-span-4 bg-slate-900 p-8 text-slate-50 flex flex-col justify-between hidden md:flex">
                     <div>
-                        <div className="flex items-center gap-3 mb-10">
-                            <div className="w-10 h-10 bg-blue-500 rounded-xl flex items-center justify-center text-white font-bold text-xl shadow-lg shadow-blue-500/20">
+                        <div className="flex items-center gap-2 mb-10">
+                            <div className="w-8 h-8 bg-white rounded-md flex items-center justify-center text-slate-900 font-bold text-lg ring-1 ring-white/20" aria-hidden="true">
                                 S
                             </div>
-                            <h2 className="text-xl font-bold tracking-tight">Snaphunt AI</h2>
+                            <h2 className="text-sm font-bold tracking-tight uppercase">Snaphunt</h2>
                         </div>
 
-                        <div className="space-y-8">
-                            <div className={`flex items-start gap-4 transition-opacity ${step === 1 ? 'opacity-100' : 'opacity-40'}`}>
-                                <div className="w-6 h-6 rounded-full bg-blue-500 flex items-center justify-center text-[10px] font-bold">1</div>
+                        <nav className="space-y-6" aria-label="Setup Steps">
+                            <div className={`flex items-start gap-3 transition-opacity ${step === 1 ? 'opacity-100' : 'opacity-40'}`} aria-current={step === 1 ? "step" : undefined}>
+                                <div className="w-5 h-5 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-[10px] font-bold">1</div>
                                 <div>
-                                    <h4 className="font-bold text-sm">System Setup</h4>
-                                    <p className="text-xs text-slate-400 mt-1">Connect models and scan document sources.</p>
+                                    <h3 className="font-semibold text-xs tracking-tight">System Setup</h3>
+                                    <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">Connect models & scan document sources.</p>
                                 </div>
                             </div>
-                            <div className={`flex items-start gap-4 transition-opacity ${step === 2 ? 'opacity-100' : 'opacity-40'}`}>
-                                <div className="w-6 h-6 rounded-full bg-blue-500 flex items-center justify-center text-[10px] font-bold">2</div>
+                            <div className={`flex items-start gap-3 transition-opacity ${step === 2 ? 'opacity-100' : 'opacity-40'}`} aria-current={step === 2 ? "step" : undefined}>
+                                <div className="w-5 h-5 rounded-full bg-white/10 border border-white/20 flex items-center justify-center text-[10px] font-bold">2</div>
                                 <div>
-                                    <h4 className="font-bold text-sm">Prune & Rank</h4>
-                                    <p className="text-xs text-slate-400 mt-1">Select candidates and provide initial context.</p>
+                                    <h3 className="font-semibold text-xs tracking-tight">Prune & Rank</h3>
+                                    <p className="text-[11px] text-slate-400 mt-0.5 leading-snug">Select candidates & provide context.</p>
                                 </div>
                             </div>
-                        </div>
+                        </nav>
                     </div>
 
-                    <div className="space-y-4 pt-10 border-t border-slate-800">
-                        <div className="flex items-center gap-3 text-[11px] text-slate-500 uppercase font-black tracking-widest">
-                            <ShieldCheck size={14} className="text-blue-500" />
+                    <div className="pt-6 border-t border-white/10">
+                        <div className="flex items-center gap-2 text-[10px] text-slate-400 uppercase font-semibold tracking-widest">
+                            <ShieldCheck size={12} className="text-emerald-400" aria-hidden="true" />
                             <span>Enterprise Secured</span>
                         </div>
                     </div>
                 </div>
 
-                <div className="md:col-span-8 p-6 sm:p-10 lg:p-14 max-h-[90vh] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-100">
+                <div className="md:col-span-8 p-10 max-h-[90vh] overflow-y-auto">
                     {step === 1 ? (
-                        <div className="space-y-8">
-                            <header className="mb-10">
-                                <h1 className="text-3xl font-black text-slate-900 mb-2">Configurations</h1>
-                                <p className="text-slate-500 text-sm">Initialize your talent intelligence environment.</p>
+                        <div className="space-y-8 animate-in fade-in duration-500">
+                            <header className="mb-4">
+                                <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">Configurations</h1>
+                                <p className="text-slate-500 text-sm mt-1">Set up your intelligence key and data sources.</p>
                             </header>
 
-                            <section className="space-y-6">
-                                <div className="space-y-4">
-                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                                        <ShieldCheck size={14} /> Intelligence Key
-                                    </h3>
-                                    <div>
-                                        <label className="block text-xs font-bold text-slate-500 mb-2">Master AI Key (Gemini or OpenAI)</label>
-                                        <input
-                                            type="password"
-                                            className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all placeholder:text-slate-300 text-sm"
-                                            value={formData.apiKey}
-                                            onChange={e => setFormData({ ...formData, apiKey: e.target.value })}
-                                            placeholder="Enter AIza... or sk-..."
-                                        />
-                                    </div>
-                                </div>
+                            <form className="space-y-6" onSubmit={(e) => e.preventDefault()}>
+                                <div className="space-y-3">
+                                    <h2 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                                        <Cpu size={14} aria-hidden="true" /> AI Provider & Key
+                                    </h2>
 
-                                <div className="space-y-6 pt-6 border-t border-slate-50">
-                                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                                        <Sparkles size={14} className="text-orange-400" /> Analysis Configuration
-                                    </h3>
-
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                                        <div className="space-y-2">
-                                            <label className="block text-xs font-bold text-slate-500 mb-2 flex items-center justify-between">
-                                                Analysis Tier
-                                                <span className={`text-[9px] px-2 py-0.5 rounded-full font-black uppercase ${formData.tier === 'pro' ? 'bg-purple-50 text-purple-600' : 'bg-blue-50 text-blue-600'}`}>
-                                                    {formData.tier} Plan
-                                                </span>
-                                            </label>
-                                            <div className="grid grid-cols-2 gap-2">
-                                                {(['basic', 'pro'] as const).map(t => (
-                                                    <button
-                                                        key={t}
-                                                        type="button"
-                                                        onClick={() => setFormData({ ...formData, tier: t })}
-                                                        className={`py-2 px-3 rounded-xl text-[10px] font-black transition-all capitalize border ${formData.tier === t ? 'bg-slate-900 border-slate-900 text-white shadow-lg' : 'bg-white border-slate-200 text-slate-400 hover:border-slate-300'}`}
-                                                    >
-                                                        {t}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                            <p className="text-[9px] text-slate-400 mt-1 italic">
-                                                {formData.tier === 'pro' ? 'Higher token limits & deeper analysis depth.' : 'Standard analysis speed and limits.'}
-                                            </p>
-                                        </div>
-
-                                        <div className="space-y-2">
-                                            <label className="block text-xs font-bold text-slate-500 mb-2">Target Model</label>
-                                            <div className="relative">
-                                                <select
-                                                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all appearance-none text-sm font-medium"
-                                                    value={formData.model}
-                                                    onChange={e => setFormData({ ...formData, model: e.target.value })}
+                                    <div className="space-y-3">
+                                        <span className="text-[13px] font-medium text-slate-700 block">Select Provider</span>
+                                        <div className="flex gap-1 bg-slate-100 p-1 rounded-xl">
+                                            {(['google', 'openai', 'anthropic', 'mistral'] as const).map(p => (
+                                                <button
+                                                    key={p}
+                                                    type="button"
+                                                    onClick={() => setFormData({ ...formData, provider: p })}
+                                                    className={`flex-1 py-2 px-3 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${formData.provider === p ? 'bg-slate-900 text-white shadow-lg scale-[1.02]' : 'text-slate-500 hover:text-slate-800'}`}
                                                 >
-                                                    {availableModels.length > 0 ? (
-                                                        availableModels.map(m => (
-                                                            <option key={m} value={m}>{m}</option>
-                                                        ))
-                                                    ) : (
-                                                        <option disabled>
-                                                            {fetchingModels ? 'Loading models...' : 'Enter API Key to see models'}
-                                                        </option>
-                                                    )}
-                                                </select>
-                                                <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-                                                    {fetchingModels ? (
-                                                        <div className="w-3 h-3 border-2 border-slate-200 border-t-blue-500 rounded-full animate-spin" />
-                                                    ) : modelError ? (
-                                                        <span className="text-red-500 text-[10px] font-bold">!</span>
-                                                    ) : (
-                                                        <Sparkles size={14} />
-                                                    )}
+                                                    {p}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="space-y-1.5 pt-2">
+                                        <label htmlFor="api-key" className="text-[13px] font-medium text-slate-700">Master {formData.provider?.toUpperCase()} Key</label>
+                                        <div className="relative">
+                                            <input
+                                                id="api-key"
+                                                type="password"
+                                                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-md focus:ring-2 focus:ring-slate-950/5 focus:border-slate-400 outline-none transition-all placeholder:text-slate-400 text-sm shadow-sm pr-24"
+                                                value={formData.apiKey}
+                                                onChange={e => setFormData({ ...formData, apiKey: e.target.value })}
+                                                placeholder="Enter AIza... or sk-..."
+                                            />
+                                            {detectedProvider && detectedProvider !== formData.provider && (
+                                                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5 px-2 py-1 bg-amber-500 text-white rounded text-[8px] font-black uppercase spacing-widest animate-pulse">
+                                                    <AlertCircle size={10} /> Mis-match?
                                                 </div>
-                                            </div>
-                                            {modelError && (
-                                                <p className="text-[10px] text-red-500 mt-1 font-medium animate-in fade-in slide-in-from-top-1">
-                                                    {modelError}
-                                                </p>
+                                            )}
+                                            {detectedProvider === formData.provider && (
+                                                <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5 px-2 py-1 bg-emerald-500 text-white rounded text-[8px] font-black uppercase spacing-widest">
+                                                    <CheckCircle2 size={10} /> Verified
+                                                </div>
                                             )}
                                         </div>
                                     </div>
                                 </div>
 
-                                <div className="space-y-4 pt-4 border-t border-slate-50">
+                                <div className="space-y-6 pt-6 border-t border-slate-100">
+                                    <h2 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                                        <Sparkles size={14} className="text-amber-500" aria-hidden="true" /> Analysis Configuration
+                                    </h2>
+
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                        <div className="space-y-2">
+                                            <span id="tier-label" className="text-[13px] font-medium text-slate-700 block">Analysis Tier</span>
+                                            <div className="grid grid-cols-2 gap-1 bg-slate-100 p-1 rounded-md" role="radiogroup" aria-labelledby="tier-label">
+                                                {(['basic', 'pro'] as const).map(t => (
+                                                    <button
+                                                        key={t}
+                                                        type="button"
+                                                        onClick={() => setFormData({ ...formData, tier: t })}
+                                                        className={`py-1.5 px-3 rounded text-[11px] font-semibold transition-all capitalize ${formData.tier === t ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-950/5' : 'text-slate-500 hover:text-slate-900'}`}
+                                                        role="radio"
+                                                        aria-checked={formData.tier === t}
+                                                    >
+                                                        {t}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div className="space-y-2 opacity-60">
+                                            <label className="text-[13px] font-medium text-slate-700 block">Target Model</label>
+                                            <div className="px-3 py-2 bg-slate-50 border border-slate-200 rounded-md text-xs font-semibold text-slate-500 flex items-center gap-2">
+                                                <Sparkles size={12} className="text-slate-400" />
+                                                Auto-selected based on Provider
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-4 pt-6 border-t border-slate-100">
                                     <div className="flex justify-between items-center">
-                                        <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                                            <FileText size={14} /> Knowledge Source
-                                        </h3>
+                                        <h2 className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                                            <FileText size={14} aria-hidden="true" /> Knowledge Source
+                                        </h2>
                                         <button
+                                            type="button"
                                             onClick={handleFetchSources}
-                                            className="text-[10px] font-black text-blue-600 hover:text-blue-700 flex items-center gap-1.5 transition-colors"
+                                            className="text-[10px] font-semibold text-slate-600 hover:text-slate-900 flex items-center gap-1.5 transition-colors"
+                                            aria-label="View history of scanned collections"
                                         >
-                                            <History size={12} /> View History
+                                            <History size={12} aria-hidden="true" /> View History
                                         </button>
                                     </div>
                                     <div
-                                        className={`bg-slate-50 p-6 rounded-2xl border transition-all ${isDragging ? 'border-blue-500 bg-blue-50/50 scale-[1.02]' : 'border-slate-100 shadow-inner'}`}
+                                        className={`bg-slate-50/50 p-4 rounded-md border transition-all ${isDragging ? 'border-slate-900 ring-2 ring-slate-950/5 bg-white' : 'border-slate-200'}`}
                                         onDragOver={e => { e.preventDefault(); setIsDragging(true); }}
                                         onDragLeave={() => setIsDragging(false)}
                                         onDrop={handleDrop}
                                     >
-                                        <div className="flex gap-2 mb-4">
+                                        <div className="flex gap-1 mb-3" role="radiogroup" aria-label="Source Type">
                                             {(['file', 'url'] as const).map(t => (
                                                 <button
                                                     key={t}
+                                                    type="button"
                                                     onClick={() => setFormData({ ...formData, sourceType: t })}
-                                                    className={`px-4 py-2 rounded-lg text-[10px] font-black uppercase tracking-tighter transition-all ${formData.sourceType === t ? 'bg-[#0f172a] text-white' : 'bg-white text-slate-400 border border-slate-200'}`}
+                                                    className={`px-3 py-1 rounded text-[10px] font-semibold uppercase tracking-tight transition-all ${formData.sourceType === t ? 'bg-slate-900 text-white' : 'bg-white text-slate-500 border border-slate-200 hover:bg-slate-50'}`}
+                                                    role="radio"
+                                                    aria-checked={formData.sourceType === t}
                                                 >
                                                     {t === 'file' ? 'Local System' : 'URL / Bucket'}
                                                 </button>
                                             ))}
                                         </div>
                                         <div className="relative">
+                                            <label htmlFor="source-value" className="sr-only">Source Path or URL</label>
                                             <input
+                                                id="source-value"
                                                 type="text"
-                                                className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all text-sm pr-10"
+                                                className="w-full px-3 py-2 bg-white border border-slate-200 rounded-md focus:ring-2 focus:ring-slate-950/5 focus:border-slate-400 outline-none transition-all text-sm pr-10 shadow-sm"
                                                 value={formData.sourceValue}
                                                 onChange={e => setFormData({ ...formData, sourceValue: e.target.value })}
                                                 placeholder={formData.sourceType === 'file' ? "e.g. C:/Resumes or drop ZIP here" : "e.g. s3://bucket/data.xml"}
                                             />
-                                            <Upload className={`absolute right-4 top-1/2 -translate-y-1/2 transition-colors ${isDragging ? 'text-blue-500' : 'text-slate-300'}`} size={16} />
+                                            <Upload className={`absolute right-3 top-1/2 -translate-y-1/2 transition-colors ${isDragging ? 'text-slate-900' : 'text-slate-300'}`} size={14} aria-hidden="true" />
                                         </div>
                                     </div>
                                 </div>
-                            </section>
+                            </form>
 
                             <button
+                                type="button"
                                 onClick={handlePreview}
                                 disabled={!formData.sourceValue || !formData.apiKey || previewLoading}
-                                className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-blue-700 hover:shadow-xl hover:shadow-blue-500/20 transition-all disabled:opacity-30 disabled:grayscale flex items-center justify-center gap-3 mt-10"
+                                className="inline-flex items-center justify-center w-full rounded-md text-sm font-medium ring-offset-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 h-11 px-4 py-2 bg-slate-900 text-slate-50 hover:bg-slate-800 shadow-sm gap-2"
                             >
-                                {previewLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <ChevronRight size={18} />}
+                                {previewLoading ? <div className="w-3 h-3 border-2 border-slate-50/30 border-t-slate-50 rounded-full animate-spin" aria-hidden="true" /> : <ChevronRight size={16} aria-hidden="true" />}
                                 Scan & Preview Candidates
                             </button>
 
-                            <section className="pt-10 border-t border-slate-50">
-                                <div className="bg-red-50 p-6 rounded-3xl border border-red-100 flex items-center justify-between">
+                            <section className="pt-8 border-t border-slate-100">
+                                <div className="bg-rose-50/50 p-4 rounded-md border border-rose-100 flex items-center justify-between">
                                     <div>
-                                        <h4 className="text-[10px] font-black text-red-600 uppercase tracking-widest flex items-center gap-2 mb-1">
-                                            <Trash2 size={12} /> System Management
-                                        </h4>
-                                        <p className="text-[10px] text-red-500/70 font-medium">Purge all vector data and reset registry.</p>
+                                        <h3 className="text-[11px] font-semibold text-rose-600 uppercase tracking-wider flex items-center gap-2 mb-1">
+                                            <RotateCcw size={12} aria-hidden="true" /> Clear Configuration
+                                        </h3>
+                                        <p className="text-[11px] text-rose-500/70 font-medium">Reset keys, models, and paths. Data remains secure.</p>
                                     </div>
                                     <button
+                                        type="button"
                                         onClick={() => setShowResetModal(true)}
-                                        disabled={loading}
-                                        className="p-3 bg-white border border-red-200 text-red-600 rounded-xl hover:bg-red-600 hover:text-white transition-all shadow-sm"
-                                        title="Factory Reset"
+                                        className="inline-flex items-center justify-center rounded-md text-xs font-semibold ring-offset-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-rose-200 bg-white hover:bg-rose-50 text-rose-500 h-8 px-3"
                                     >
-                                        <RotateCcw size={16} />
+                                        Clear Config
                                     </button>
                                 </div>
                             </section>
@@ -468,6 +470,7 @@ export const Config = () => {
                                 <div className="flex gap-2">
                                     {selectedFiles.length >= 10 && (
                                         <button
+                                            type="button"
                                             onClick={handleBatchSync}
                                             disabled={loading}
                                             className="text-[10px] font-black text-blue-600 bg-blue-50 px-4 py-2 rounded-xl border border-blue-100 hover:bg-blue-600 hover:text-white transition-all"
@@ -476,6 +479,7 @@ export const Config = () => {
                                         </button>
                                     )}
                                     <button
+                                        type="button"
                                         onClick={() => setStep(1)}
                                         className="text-xs font-bold text-slate-400 hover:bg-slate-100 px-3 py-1.5 rounded-lg transition-colors"
                                     >
@@ -496,12 +500,13 @@ export const Config = () => {
                             </div>
 
                             <section className="space-y-4 pt-6 border-t border-slate-50">
-                                <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                                    <Search size={14} /> Initial Semantic Context
-                                </h3>
+                                <h2 className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
+                                    <Search size={14} aria-hidden="true" /> Initial Semantic Context
+                                </h2>
                                 <div>
-                                    <label className="block text-xs font-bold text-slate-500 mb-2">What are you looking for right now?</label>
+                                    <label htmlFor="filter-context" className="block text-xs font-bold text-slate-500 mb-2">What are you looking for right now?</label>
                                     <textarea
+                                        id="filter-context"
                                         className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all placeholder:text-slate-300 text-sm h-24 resize-none"
                                         value={formData.filterContext}
                                         onChange={e => setFormData({ ...formData, filterContext: e.target.value })}
@@ -511,11 +516,12 @@ export const Config = () => {
                             </section>
 
                             <button
+                                type="button"
                                 onClick={handleSubmit}
                                 disabled={loading || selectedFiles.length === 0}
                                 className="w-full bg-[#0f172a] text-white py-4 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-slate-800 hover:shadow-xl transition-all disabled:opacity-30 disabled:grayscale flex items-center justify-center gap-3 mt-10"
                             >
-                                {loading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Zap size={18} className="text-blue-400" />}
+                                {loading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" aria-hidden="true" /> : <Zap size={18} className="text-blue-400" aria-hidden="true" />}
                                 Sync & Match Talent
                             </button>
                         </div>
@@ -523,7 +529,7 @@ export const Config = () => {
                 </div>
             </div>
 
-            <p className="mt-8 text-slate-400 text-[10px] font-bold uppercase tracking-[0.2em]">
+            <p className="mt-8 text-slate-400 text-[10px] font-bold uppercase tracking-[0.2em]" aria-label="Version Info">
                 Snaphunt Architecture • v2.6.0
             </p>
 
@@ -531,37 +537,71 @@ export const Config = () => {
 
             <Modal
                 isOpen={showResetModal}
-                title="Cleansing Reset"
-                description="This will purge the current vector database and clear active configurations. Collection history will remain intact. Proceed?"
-                confirmText="Reset Session"
+                title="Clear Configuration"
+                description="This will wipe your API keys and local settings. You will need to re-configure to access the system. Vector data is NOT affected. Proceed?"
+                confirmText="Clear Everything"
                 variant="danger"
-                onConfirm={handleReset}
+                onConfirm={handleClearConfig}
                 onCancel={() => setShowResetModal(false)}
             />
 
+            <Modal
+                isOpen={previewErrorModal.isOpen}
+                title="Scan Failed"
+                description={previewErrorModal.message}
+                confirmText="Understood"
+                onConfirm={() => setPreviewErrorModal({ isOpen: false, message: '' })}
+                onCancel={() => setPreviewErrorModal({ isOpen: false, message: '' })}
+            />
+
+            <Modal
+                isOpen={deleteCollectionModal.isOpen}
+                title="Remove Collection"
+                description="Are you sure you want to remove this collection from history? This action cannot be undone."
+                confirmText="Remove Now"
+                variant="danger"
+                onConfirm={confirmDeleteCollection}
+                onCancel={() => setDeleteCollectionModal({ isOpen: false, sourceId: null })}
+            />
+
+            <Modal
+                isOpen={showCloseConfirm}
+                title="Unsaved Changes"
+                description="You have unsaved configuration changes. Moving back now will discard them. Proceed anyway?"
+                confirmText="Discard Changes"
+                variant="danger"
+                onConfirm={() => {
+                    setShowCloseConfirm(false);
+                    if (pendingAction) pendingAction();
+                }}
+                onCancel={() => setShowCloseConfirm(false)}
+            />
+
             {showHistory && (
-                <div className="fixed inset-0 z-[10000] flex items-center justify-center p-6">
+                <div className="fixed inset-0 z-[10000] flex items-center justify-center p-6" role="dialog" aria-modal="true" aria-labelledby="history-title">
                     <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-300" onClick={() => setShowHistory(false)} />
                     <div className="relative w-full max-w-2xl bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-100 flex flex-col animate-in slide-in-from-top-2 duration-300 max-h-[80vh]">
                         <div className="p-8 border-b border-slate-50 flex justify-between items-center">
                             <div>
-                                <h3 className="text-xl font-black text-slate-900">Collection History</h3>
+                                <h3 id="history-title" className="text-xl font-black text-slate-900">Collection History</h3>
                                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Select a past intelligence source</p>
                             </div>
-                            <button onClick={() => setShowHistory(false)} className="p-2 hover:bg-slate-50 rounded-xl text-slate-300 transition-colors">
-                                <X size={20} />
+                            <button onClick={() => setShowHistory(false)} className="p-2 hover:bg-slate-50 rounded-xl text-slate-300 transition-colors" aria-label="Close History">
+                                <X size={20} aria-hidden="true" />
                             </button>
                         </div>
                         <div className="p-4 overflow-y-auto space-y-2">
                             {pastSources.length > 0 ? pastSources.map(s => (
                                 <button
                                     key={s.id}
+                                    type="button"
                                     onClick={() => handleSelectCollection(s)}
                                     className="w-full p-4 rounded-2xl border border-slate-100 hover:border-blue-200 hover:bg-blue-50/50 transition-all flex items-center justify-between group"
+                                    aria-label={`Select collection ${s.value}`}
                                 >
                                     <div className="flex items-center gap-4">
                                         <div className="w-10 h-10 rounded-xl bg-slate-50 flex items-center justify-center text-slate-400 group-hover:bg-blue-100 group-hover:text-blue-600 transition-colors">
-                                            {s.type === 'file' ? <FileText size={18} /> : <Search size={18} />}
+                                            {s.type === 'file' ? <FileText size={18} aria-hidden="true" /> : <Search size={18} aria-hidden="true" />}
                                         </div>
                                         <div className="text-left">
                                             <div className="text-sm font-black text-slate-700 truncate max-w-[300px]">{s.value}</div>
@@ -570,18 +610,20 @@ export const Config = () => {
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <button
+                                            type="button"
                                             onClick={(e) => handleDeleteCollection(e, s.id)}
                                             className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"
                                             title="Delete from history"
+                                            aria-label={`Delete ${s.value} from history`}
                                         >
-                                            <Trash2 size={16} />
+                                            <Trash2 size={16} aria-hidden="true" />
                                         </button>
-                                        <ChevronRight size={18} className="text-slate-300 group-hover:text-blue-500 transition-colors" />
+                                        <ChevronRight size={18} className="text-slate-300 group-hover:text-blue-500 transition-colors" aria-hidden="true" />
                                     </div>
                                 </button>
                             )) : (
                                 <div className="py-20 text-center">
-                                    <History size={48} className="mx-auto text-slate-100 mb-4" />
+                                    <History size={48} className="mx-auto text-slate-100 mb-4" aria-hidden="true" />
                                     <p className="text-slate-400 text-sm font-medium">No previous collections found.</p>
                                 </div>
                             )}

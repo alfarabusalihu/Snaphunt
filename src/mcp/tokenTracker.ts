@@ -96,6 +96,16 @@ export class TokenTracker {
         this.saveState();
     }
 
+    /**
+     * Reset the grand total token counter (called during /reset)
+     */
+    public resetGrandTotal() {
+        console.log(`🔄 [TokenTracker] Resetting Grand Total (was: ${this.grandTotalTokens})`);
+        this.grandTotalTokens = 0;
+        this.requestTotals.clear();
+        this.saveState();
+    }
+
     private loadState() {
         try {
             if (fs.existsSync(this.persistencePath)) {

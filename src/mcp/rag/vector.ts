@@ -67,7 +67,7 @@ export async function getLatestChunks(limit = 2): Promise<{ score: number; paylo
     });
 
     return response.points.map((item) => ({
-        score: 1.0, // Default score since it's not a search
+        score: 1.0, 
         payload: item.payload as VectorPayload | null
     }));
 }

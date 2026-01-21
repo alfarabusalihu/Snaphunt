@@ -20,7 +20,8 @@ export const api = {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 files: selectedFiles || [],
-                apiKey: config.apiKey
+                apiKey: config.apiKey,
+                provider: config.provider
             })
         });
         const data = await res.json();
@@ -32,7 +33,7 @@ export const api = {
         const res = await fetch(`${API_BASE}/query`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ query, apiKey, maxChunks })
+            body: JSON.stringify({ query, apiKey, maxChunks, provider: localStorage.getItem('snap_provider') })
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Query failed');
@@ -45,8 +46,11 @@ export const api = {
         model: string,
         question: string,
         tier: 'basic' | 'pro',
-        requestId?: string
+        requestId?: string,
+        maxChunks?: number,
+        provider?: string
     ): Promise<AnalyzeResponse> {
+        console.log(`🚀 [API] Calling /analyze with Provider: ${provider}, Model: ${model}`);
         const res = await fetch(`${API_BASE}/analyze`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -56,7 +60,9 @@ export const api = {
                 model,
                 question,
                 tier,
-                requestId
+                requestId,
+                maxChunks,
+                provider
             })
         });
         const data = await res.json();

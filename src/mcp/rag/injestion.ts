@@ -2,7 +2,6 @@ import { chunkText } from "./chunk.js";
 import { embedQuery } from "./embedding.js";
 import { ensureCollection, storeVectors } from "./vector.js";
 import type { IngestOptions, VectorPayload } from "./rag.types.js";
-import { sleep } from "../../utils.js";
 import { burstGuard } from "../utils/burstGuard.js";
 
 export async function ingestDocument(rawText: string, options: IngestOptions): Promise<void> {
@@ -20,8 +19,7 @@ export async function ingestDocument(rawText: string, options: IngestOptions): P
     const embeddings = await Promise.all(chunks.map(async (chunk) => {
         // Burst Guard - Wait if we're spamming
         await burstGuard.wait('google');
-
-        return await embedQuery(chunk, options.apiKey, options.requestId);
+        return await embedQuery(chunk, options.apiKey, options.provider, options.requestId);
     }));
 
     await ensureCollection(embeddings[0].length);

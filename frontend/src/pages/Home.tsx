@@ -2,9 +2,12 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { api } from '../api';
 import type { Config as ConfigType, QueryResponse, InternalCandidate, AnalysisCandidate } from '../types';
-import { BrainCircuit, Settings, FileText, Download, Eye, Sparkles, Filter, User, RotateCcw } from 'lucide-react';
+import { BrainCircuit, Settings, Sparkles, Filter, RotateCcw, Trash2 } from 'lucide-react';
 import { PdfViewer } from '../components/PdfViewer';
 import { useToast } from '../components/Toast';
+import { Modal } from '../components/Modal';
+import { CandidateCard } from '../components/CandidateCard';
+import { getProviderByKey } from '../utils/provider';
 
 export const Home = () => {
     const navigate = useNavigate();
@@ -28,6 +31,8 @@ export const Home = () => {
     });
 
     const [searchCooldown, setSearchCooldown] = useState(false);
+    const [showResetModal, setShowResetModal] = useState(false);
+    const [isResetting, setIsResetting] = useState(false);
     const { showToast, ToastContainer } = useToast();
 
     useEffect(() => {
@@ -55,9 +60,11 @@ export const Home = () => {
             navigate('/config');
         } else {
             const parsed = JSON.parse(saved);
+            if (!parsed.provider) {
+                parsed.provider = getProviderByKey(parsed.apiKey) || 'google';
+            }
             setConfig(parsed);
 
-            // Pull results from navigation state (freshly from Config) or fallback to last saved results
             if (location.state?.initialResults) {
                 setResults(location.state.initialResults);
             } else {
@@ -88,15 +95,18 @@ export const Home = () => {
     const handleAnalyze = async () => {
         if (!config || !results?.chunks || analyzing || retryTimer !== null) return;
         const now = new Date().toISOString();
-        console.log(`🚀 [Frontend] [${now}] handleAnalyze triggered`);
         setAnalyzing(true);
+        console.log("🛠️ [Home] Triggering Analysis with config:", config);
         try {
             const res = await api.analyze(
                 results.chunks,
                 config.apiKey,
                 config.model,
                 jobDesc || config.filterContext,
-                config.tier
+                config.tier,
+                undefined,
+                config.maxChunks,
+                config.provider
             );
             setAnalysis(res.analysis);
         } catch (e: any) {
@@ -110,7 +120,7 @@ export const Home = () => {
                 setRetryTimer(seconds);
             } else {
                 console.error(`❌ [Frontend] Critical Analysis error:`, fullMsg);
-                showToast('Deep Analysis failed. Please check your credentials.', 'error');
+                showToast(`Deep Analysis failed: ${fullMsg.substring(0, 50)}${fullMsg.length > 50 ? '...' : ''}`, 'error');
             }
         } finally {
             setAnalyzing(false);
@@ -119,6 +129,22 @@ export const Home = () => {
 
     const handleDownload = (path: string) => {
         window.open(`http://localhost:3400/download?path=${encodeURIComponent(path)}`, '_blank');
+    };
+
+    const handleResetVector = async () => {
+        setIsResetting(true);
+        setShowResetModal(false);
+        try {
+            await api.reset();
+            setResults(null);
+            setAnalysis(null);
+            localStorage.removeItem('snap_last_results');
+            showToast('Vector index purged successfully.', 'success');
+        } catch (e) {
+            showToast('Failed to reset vector index.', 'error');
+        } finally {
+            setIsResetting(false);
+        }
     };
 
     const candidates = results?.chunks.reduce((acc: InternalCandidate[], chunk) => {
@@ -146,82 +172,79 @@ export const Home = () => {
         : candidates;
 
     return (
-        <div className="min-h-screen bg-[#f8fafc] flex flex-col lg:flex-row">
-            <div className="w-full lg:w-[450px] border-r border-slate-200 bg-white flex flex-col h-auto lg:h-screen lg:sticky lg:top-0">
-                <header className="p-8 border-b border-slate-50 flex justify-between items-center">
-                    <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">S</div>
-                        <h1 className="font-black text-slate-800 tracking-tight">SNAPHUNT</h1>
+        <div className="min-h-screen bg-slate-50/50 flex flex-col lg:flex-row">
+            <div className="w-full lg:w-[420px] border-r border-slate-200 bg-white flex flex-col h-auto lg:h-screen lg:sticky lg:top-0">
+                <header className="h-16 px-6 border-b border-slate-200 flex justify-between items-center bg-white">
+                    <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 bg-slate-900 rounded-md flex items-center justify-center text-white font-bold text-xs ring-1 ring-slate-950" aria-hidden="true">S</div>
+                        <h1 className="font-bold text-slate-900 tracking-tight text-sm uppercase">Snaphunt</h1>
                     </div>
                     <button
                         onClick={() => navigate('/config')}
-                        className="p-2 hover:bg-slate-100 rounded-lg text-slate-400 transition-colors"
+                        className="p-2 hover:bg-slate-100 rounded-md text-slate-500 transition-colors border border-transparent hover:border-slate-200"
+                        aria-label="System Settings"
                     >
-                        <Settings size={18} />
+                        <Settings size={16} aria-hidden="true" />
                     </button>
                 </header>
 
-                <div className="p-8 space-y-8 flex-1 overflow-y-auto">
-                    <section className="space-y-4">
+                <div className="p-6 space-y-8 flex-1 overflow-y-auto">
+                    <section className="space-y-3">
                         <div className="flex items-center justify-between">
-                            <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] flex items-center gap-2">
-                                <Filter size={14} /> Requirement Context
-                            </h3>
+                            <h2 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                                <Filter size={13} aria-hidden="true" /> Context
+                            </h2>
                             <button
                                 onClick={() => config && handleQuery(jobDesc || config.filterContext, config.apiKey, config.maxChunks)}
                                 disabled={searchCooldown || !config}
-                                className="text-[9px] font-black text-blue-600 hover:text-blue-700 uppercase tracking-widest flex items-center gap-1.5 transition-all disabled:opacity-30"
+                                className="text-[10px] font-medium text-slate-600 hover:text-slate-900 uppercase tracking-tight flex items-center gap-1.5 transition-all disabled:opacity-30"
+                                aria-label="Refresh ranking"
                             >
-                                <RotateCcw size={12} className={searchCooldown ? 'animate-spin' : ''} />
-                                Refresh Rank
+                                <RotateCcw size={11} className={searchCooldown ? 'animate-spin' : ''} aria-hidden="true" />
+                                Refresh
                             </button>
                         </div>
                         <textarea
-                            className="w-full h-48 px-6 py-5 bg-slate-50 border border-slate-100 rounded-3xl outline-none focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-sm leading-relaxed placeholder:text-slate-300 resize-none shadow-inner"
+                            className="w-full h-40 px-4 py-3 bg-white border border-slate-200 rounded-md outline-none focus:ring-2 focus:ring-slate-950/5 focus:border-slate-400 transition-all text-sm leading-relaxed placeholder:text-slate-400 resize-none shadow-sm"
                             placeholder="Insert Job Description or specific filters here..."
                             value={jobDesc}
                             onChange={(e) => setJobDesc(e.target.value)}
+                            aria-label="Job description or filter context"
                         />
                         <button
                             onClick={handleAnalyze}
                             disabled={analyzing || !results || retryTimer !== null || searchCooldown}
-                            className="w-full bg-[#0f172a] text-white py-4 rounded-2xl font-black text-sm uppercase tracking-widest hover:bg-slate-800 disabled:opacity-30 disabled:grayscale transition-all flex items-center justify-center gap-3 shadow-xl shadow-slate-200"
+                            className="inline-flex items-center justify-center w-full rounded-md text-sm font-medium ring-offset-white transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 h-11 px-4 py-2 bg-slate-900 text-slate-50 hover:bg-slate-800 shadow-sm gap-2"
                         >
                             {analyzing ? (
-                                <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                                <div className="w-3 h-3 border-2 border-slate-50/30 border-t-slate-50 rounded-full animate-spin" aria-hidden="true" />
                             ) : searchCooldown ? (
-                                <div className="flex items-center gap-2">
-                                    <RotateCcw size={18} className="animate-spin-slow text-blue-400" />
-                                    <span>Syncing...</span>
-                                </div>
+                                <RotateCcw size={15} className="animate-spin" aria-hidden="true" />
                             ) : (
-                                <BrainCircuit size={18} className="text-blue-400" />
+                                <BrainCircuit size={15} aria-hidden="true" />
                             )}
-                            {searchCooldown ? "" : "Perform Deep Analysis"}
+                            Perform Deep Analysis
                         </button>
                     </section>
 
                     {retryTimer !== null && (
-                        <div className="p-6 bg-red-50 border-2 border-red-200 rounded-3xl flex flex-col items-center gap-4 text-red-700 animate-bounce shadow-lg">
-                            <RotateCcw size={32} className="animate-spin-slow text-red-500" />
-                            <div className="text-center">
-                                <div className="text-sm font-black uppercase tracking-widest mb-1">Quota Exceeded</div>
-                                <div className="text-2xl font-black">
-                                    Retry in <span className="underline">{retryTimer}s</span>
+                        <div role="alert" className="p-4 bg-rose-50 border border-rose-200 rounded-lg flex items-center gap-4 text-rose-700 animate-in fade-in slide-in-from-top-2">
+                            <RotateCcw size={20} className="animate-spin-slow text-rose-500 flex-shrink-0" aria-hidden="true" />
+                            <div className="flex-1">
+                                <div className="text-[10px] font-bold uppercase tracking-widest mb-0.5">Quota Limit</div>
+                                <div className="text-sm font-semibold tracking-tight">
+                                    Retry in <span className="font-bold underline">{retryTimer}s</span>
                                 </div>
-                                <p className="text-[10px] opacity-70 mt-2 leading-tight">
-                                    Gemini free tier allows limited requests.<br />Wait for the countdown to finish.
-                                </p>
                             </div>
                         </div>
                     )}
 
                     {analysis && (
-                        <div className="p-6 bg-blue-50 rounded-2xl border border-blue-100 animate-in fade-in slide-in-from-top-4 duration-500">
-                            <div className="flex items-center gap-2 text-blue-700 font-black text-xs uppercase tracking-wider mb-2">
-                                <Sparkles size={14} /> Intelligence Summary
+                        <div className="p-5 bg-slate-50/50 rounded-lg border border-slate-200 animate-in fade-in slide-in-from-top-4 duration-500">
+                            <div className="flex items-center gap-2 text-slate-900 font-semibold text-xs mb-2">
+                                <Sparkles size={14} className="text-amber-500" aria-hidden="true" /> AI Insights
                             </div>
-                            <p className="text-sm text-blue-900 leading-relaxed font-medium">
+                            <p className="text-[13px] text-slate-600 leading-relaxed font-normal">
                                 {typeof analysis === 'string' ? analysis : analysis.summary}
                             </p>
                         </div>
@@ -230,11 +253,11 @@ export const Home = () => {
             </div>
 
             <main className="flex-1 p-6 md:p-12 overflow-y-auto">
-                <header className="mb-12 flex justify-between items-end">
+                <header className="mb-12 flex justify-between items-start">
                     <div>
                         <h2 className="text-4xl font-black text-slate-900 mb-2">Talent Pool</h2>
                         <div className="flex items-center gap-2 text-slate-400 text-sm">
-                            <Filter size={14} />
+                            <Filter size={14} aria-hidden="true" />
                             {analysis?.candidates ? (
                                 <span>Showing <strong>{filteredCandidates.length}</strong> {showOnlySuitable ? 'Most Suitable' : 'Total'} Candidates</span>
                             ) : (
@@ -242,79 +265,42 @@ export const Home = () => {
                             )}
                         </div>
                     </div>
-                    {analysis?.candidates && (
+                    <div className="flex items-center gap-3">
                         <button
-                            onClick={() => setShowOnlySuitable(!showOnlySuitable)}
-                            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all ${showOnlySuitable ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-500'
-                                }`}
+                            onClick={() => setShowResetModal(true)}
+                            disabled={isResetting}
+                            className="flex items-center gap-2 px-4 py-2 bg-rose-50 text-rose-600 rounded-lg text-[10px] font-bold uppercase tracking-wider border border-rose-100 hover:bg-rose-600 hover:text-white transition-all disabled:opacity-50"
+                            title="Reset Vector Index"
+                            aria-label="Purge Vector Index"
                         >
-                            <BrainCircuit size={14} /> {showOnlySuitable ? 'Viewing Suitable Only' : 'Show All Assessments'}
+                            {isResetting ? (
+                                <RotateCcw size={12} className="animate-spin" aria-hidden="true" />
+                            ) : (
+                                <Trash2 size={12} aria-hidden="true" />
+                            )}
+                            Purge Index
                         </button>
-                    )}
+                        {analysis?.candidates && (
+                            <button
+                                onClick={() => setShowOnlySuitable(!showOnlySuitable)}
+                                className={`flex items-center gap-2 px-4 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all border ${showOnlySuitable ? 'bg-slate-900 border-slate-900 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+                                aria-pressed={showOnlySuitable}
+                            >
+                                <BrainCircuit size={14} aria-hidden="true" /> {showOnlySuitable ? 'Suitable Only' : 'Show All'}
+                            </button>
+                        )}
+                    </div>
                 </header>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
                     {filteredCandidates.map((c, i) => (
-                        <div key={i} className="group bg-white rounded-3xl p-8 border border-slate-100 shadow-sm hover:shadow-2xl hover:-translate-y-1 transition-all duration-500 relative overflow-hidden">
-                            {c.analysis?.suitable !== undefined && (
-                                <div className={`absolute top-0 right-0 px-4 py-1.5 rounded-bl-2xl text-[10px] font-black uppercase tracking-widest ${c.analysis.suitable ? 'bg-green-500 text-white' : 'bg-slate-200 text-slate-600'
-                                    } shadow-sm`}>
-                                    {c.analysis.suitable ? 'Highly Suitable' : 'Secondary Match'}
-                                </div>
-                            )}
-
-                            {c.analysis?.score && (
-                                <div className="absolute top-10 right-8 w-14 h-14 rounded-full border-4 border-slate-50 flex items-center justify-center bg-white shadow-lg ring-4 ring-blue-50">
-                                    <div className="text-center">
-                                        <div className={`text-base font-black ${c.analysis.score > 80 ? 'text-green-600' : 'text-blue-600'}`}>
-                                            {c.analysis.score}
-                                        </div>
-                                        <div className="text-[8px] font-bold text-slate-400 -mt-1 uppercase">MATCH</div>
-                                    </div>
-                                </div>
-                            )}
-
-                            <div className="w-16 h-16 bg-slate-50 rounded-2xl flex items-center justify-center text-slate-400 mb-6 group-hover:bg-blue-600 group-hover:text-white group-hover:scale-110 group-hover:rotate-3 transition-all duration-500 shadow-inner">
-                                <User size={32} />
-                            </div>
-
-                            <h3 className="font-black text-xl text-slate-900 mb-2 truncate pr-16" title={c.source}>
-                                {c.fileName}
-                            </h3>
-
-                            {c.analysis?.justification ? (
-                                <div className="space-y-4 mb-8">
-                                    <p className="text-slate-500 text-sm leading-relaxed line-clamp-3 italic">
-                                        "{c.analysis.justification}"
-                                    </p>
-                                    <div className="flex gap-2">
-                                        <span className="px-2 py-1 bg-blue-50 text-blue-600 text-[9px] font-black uppercase rounded-md border border-blue-100">Technical Match</span>
-                                        <span className="px-2 py-1 bg-slate-50 text-slate-500 text-[9px] font-black uppercase rounded-md border border-slate-100">Phase 2 Analysis</span>
-                                    </div>
-                                </div>
-                            ) : (
-                                <div className="flex items-center gap-3 text-slate-400 text-xs mb-8">
-                                    <FileText size={14} />
-                                    <span>Analysis Pending Deep Dive</span>
-                                </div>
-                            )}
-
-                            <div className="flex gap-2">
-                                <button
-                                    onClick={() => setPdfPath(c.location)}
-                                    className="flex-1 bg-slate-900 text-white py-4 rounded-2xl font-black text-xs uppercase tracking-widest hover:bg-blue-600 hover:shadow-lg hover:shadow-blue-200 transition-all flex items-center justify-center gap-2"
-                                >
-                                    <Eye size={16} /> View Profile
-                                </button>
-                                <button
-                                    onClick={() => handleDownload(c.location)}
-                                    className="px-5 bg-slate-100 text-slate-500 py-4 rounded-2xl hover:bg-slate-200 hover:text-slate-900 transition-all"
-                                    title="Download PDF"
-                                >
-                                    <Download size={18} />
-                                </button>
-                            </div>
-                        </div>
+                        <CandidateCard
+                            key={i}
+                            file={c}
+                            variant="detailed"
+                            onView={setPdfPath}
+                            onDownload={handleDownload}
+                        />
                     ))}
                 </div>
             </main>
@@ -325,6 +311,16 @@ export const Home = () => {
                     onClose={() => setPdfPath(null)}
                 />
             )}
+
+            <Modal
+                isOpen={showResetModal}
+                title="Purge Vector Index"
+                description="This will delete all embedded document chunks from the search database. You will need to re-ingest your collections to perform analysis. History will be kept. Proceed?"
+                confirmText="Purge Now"
+                variant="danger"
+                onConfirm={handleResetVector}
+                onCancel={() => setShowResetModal(false)}
+            />
 
             <ToastContainer />
         </div>

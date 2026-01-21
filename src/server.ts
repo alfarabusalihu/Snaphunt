@@ -5,7 +5,6 @@ import * as bodyParserPkg from "body-parser";
 const bodyParser = (bodyParserPkg as any).default || bodyParserPkg;
 import { getFileBuffer } from "./mcp/parser/index.js";
 import cors from "cors";
-import { registry } from "./db.js";
 import * as multerPkg from "multer";
 const multer = (multerPkg as any).default || multerPkg;
 import * as path from "path";
@@ -72,38 +71,23 @@ app.post("/reset", async (req: Request, res: Response) => {
 
 app.post("/list-models", async (req: Request, res: Response) => {
   try {
-    const { apiKey } = req.body;
-    if (!apiKey) return res.status(400).json({ error: "API Key is required" });
-
-    // Dynamically identify provider from the Master Key
-    if (apiKey.startsWith('AIza')) {
-      console.log(`📡 [Gemini] Fetching model list...`);
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-      if (!response.ok) return res.status(response.status).json({ error: "Google API error" });
-      const data = await response.json() as any;
-      const models = (data.models || [])
-        .filter((m: any) => m.supportedGenerationMethods.includes('generateContent'))
-        .map((m: any) => m.name.replace('models/', ''));
-      return res.json({ models: Array.from(new Set(['gemini-2.5-flash', 'gemini-1.5-flash', ...models])).sort() });
-    }
-
-    if (apiKey.startsWith('sk-')) {
-      console.log(`📡 [OpenAI] Returning default stable models...`);
-      return res.json({ models: ['gpt-4o-mini', 'gpt-4o', 'gpt-4-turbo'] });
-    }
-
-    res.json({ models: ['gemini-2.5-flash', 'gpt-4o-mini'] }); // Minimal defaults
-  } catch (err: any) { res.status(500).json({ error: String(err) }); }
+    const response = await fetch(`${MCP_URL}/list-models`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(req.body) });
+    res.status(response.status).json(await response.json());
+  } catch (err) { res.status(500).json({ error: "MCP Server unreachable" }); }
 });
 
 app.get("/sources", async (req: Request, res: Response) => {
-  try { res.json({ sources: registry.getSources() }); }
-  catch (err) { res.status(500).json({ error: "Failed to fetch sources" }); }
+  try {
+    const response = await fetch(`${MCP_URL}/sources`);
+    res.status(response.status).json(await response.json());
+  } catch (err) { res.status(500).json({ error: "MCP Server unreachable" }); }
 });
 
 app.get("/sources/:id/documents", async (req: Request, res: Response) => {
-  try { res.json({ documents: registry.getDocsBySource(req.params.id) }); }
-  catch (err) { res.status(500).json({ error: "Failed to fetch documents" }); }
+  try {
+    const response = await fetch(`${MCP_URL}/sources/${req.params.id}/documents`);
+    res.status(response.status).json(await response.json());
+  } catch (err) { res.status(500).json({ error: "MCP Server unreachable" }); }
 });
 
 app.delete("/sources/:id", async (req: Request, res: Response) => {
@@ -136,4 +120,4 @@ app.get("/file", async (req: Request, res: Response) => {
 
 const server = app.listen(PORT, () => console.log(`Backend server running on http://localhost:${PORT}`));
 server.on('error', err => console.error("❌ [Backend] Error:", err));
-setInterval(() => { }, 60000);
+setInterval(() => { }, 6000);

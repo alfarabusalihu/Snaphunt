@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { X, AlertTriangle } from 'lucide-react';
+import { X } from 'lucide-react';
 
 interface ModalProps {
     isOpen: boolean;
@@ -33,36 +33,36 @@ export const Modal = ({
     return (
         <div className="fixed inset-0 z-[10000] flex items-center justify-center p-4 sm:p-6">
             <div
-                className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-300"
+                className="absolute inset-0 bg-black/60 backdrop-blur-[2px] animate-in fade-in duration-300"
                 onClick={onCancel}
             />
 
-            <div className="relative w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden border border-slate-100 animate-in zoom-in-95 fade-in duration-300">
-                <div className="p-8">
-                    <div className="flex items-center gap-4 mb-6">
-                        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center ${variant === 'danger' ? 'bg-rose-50 text-rose-500' : 'bg-blue-50 text-blue-500'}`}>
-                            {variant === 'danger' ? <AlertTriangle size={24} /> : <div className="w-3 h-3 rounded-full bg-current" />}
-                        </div>
-                        <div>
-                            <h3 className="text-xl font-black text-slate-900">{title}</h3>
-                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-1">Action Required</p>
-                        </div>
+            <div
+                className="relative w-full max-w-md bg-white rounded-lg shadow-xl overflow-hidden border border-slate-200 animate-in zoom-in-95 fade-in duration-300"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="modal-title"
+                aria-describedby="modal-description"
+            >
+                <div className="p-6">
+                    <div className="flex flex-col gap-2 mb-6">
+                        <h3 id="modal-title" className="text-lg font-semibold text-slate-900 tracking-tight">{title}</h3>
+                        <p id="modal-description" className="text-sm text-slate-500 leading-relaxed font-normal">
+                            {description}
+                        </p>
                     </div>
 
-                    <p className="text-sm text-slate-500 leading-relaxed mb-8">
-                        {description}
-                    </p>
-
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="flex flex-col-reverse sm:flex-row sm:justify-end gap-2 mt-8">
                         <button
                             onClick={onCancel}
-                            className="w-full py-3 rounded-xl text-sm font-black text-slate-400 hover:bg-slate-50 hover:text-slate-600 transition-all border border-slate-100"
+                            className="inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-slate-200 bg-white hover:bg-slate-100 hover:text-slate-900 h-10 px-4 py-2"
                         >
                             {cancelText}
                         </button>
                         <button
                             onClick={onConfirm}
-                            className={`w-full py-3 rounded-xl text-sm font-black text-white transition-all shadow-lg ${variant === 'danger' ? 'bg-rose-500 hover:bg-rose-600 shadow-rose-500/20' : 'bg-blue-600 hover:bg-blue-700 shadow-blue-500/20'}`}
+                            className={`inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-white transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 h-10 px-4 py-2 text-slate-50 ${variant === 'danger' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-slate-900 hover:bg-slate-800'}`}
+                            autoFocus
                         >
                             {confirmText}
                         </button>
@@ -71,9 +71,10 @@ export const Modal = ({
 
                 <button
                     onClick={onCancel}
-                    className="absolute top-6 right-6 text-slate-300 hover:text-slate-500 transition-colors"
+                    className="absolute top-4 right-4 text-slate-400 hover:text-slate-900 transition-colors opacity-70 hover:opacity-100 rounded-sm"
+                    aria-label="Close modal"
                 >
-                    <X size={20} />
+                    <X size={15} aria-hidden="true" />
                 </button>
             </div>
         </div>

@@ -1,6 +1,7 @@
 export interface Config {
     apiKey: string;
     model: string;
+    provider?: 'google' | 'openai' | 'anthropic' | 'mistral';
     tier: 'basic' | 'pro';
     sourceType: "url" | "file";
     sourceValue: string;
