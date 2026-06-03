@@ -1,47 +1,26 @@
 {
+  "name": "snaphunt",
+  "private": true,
   "type": "module",
+  "packageManager": "npm@11.4.2",
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
-    "dev": "nodemon --watch src --exec tsx src/server.ts",
-    "dev:mcp": "nodemon --watch src --exec tsx src/mcp/server.ts",
-    "dev:all": "run-p dev dev:mcp",
-    "build": "tsc",
-    "start": "node dist/server.js"
-  },
-  "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.2",
-    "@ai-sdk/google": "^3.0.2",
-    "@ai-sdk/mistral": "^3.0.2",
-    "@ai-sdk/openai": "^3.0.2",
-    "@google/generative-ai": "^0.24.1",
-    "@qdrant/js-client-rest": "^1.16.2",
-    "@types/node-cron": "^3.0.11",
-    "adm-zip": "^0.5.16",
-    "ai": "^6.0.5",
-    "better-sqlite3": "^12.5.0",
-    "body-parser": "^2.2.1",
-    "cors": "^2.8.5",
-    "dotenv": "^17.2.3",
-    "express": "^5.2.1",
-    "fast-xml-parser": "^5.3.3",
-    "llamaindex": "^0.12.1",
-    "multer": "^2.0.2",
-    "node-cron": "^4.2.1",
-    "openai": "^6.13.0",
-    "pdfjs-dist": "^5.4.449",
-    "tesseract.js": "^7.0.0",
-    "zod": "^4.3.2"
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "start": "run-p start:backend start:mcp",
+    "start:backend": "npm run start --prefix apps/backend",
+    "start:mcp": "npm run start --prefix apps/mcp-server",
+    "typecheck": "turbo typecheck",
+    "lint": "turbo lint"
   },
   "devDependencies": {
-    "@types/adm-zip": "^0.5.7",
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.6",
-    "@types/multer": "^2.0.0",
-    "@types/node": "^25.0.2",
+    "concurrently": "^9.1.2",
     "nodemon": "^3.1.11",
     "npm-run-all": "^4.1.5",
-    "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
+    "turbo": "^2.5.4",
     "typescript": "^5.9.3"
   }
 }

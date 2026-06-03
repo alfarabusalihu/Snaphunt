@@ -1,0 +1,35 @@
+services:
+  snaphunt:
+    build:
+      context: .
+      args:
+        VITE_API_URL: http://localhost:3400
+    container_name: snaphunt-app
+    ports:
+      - "3400:3400"
+    environment:
+      PORT: 3400
+      MCP_PORT: 3300
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      QDRANT_URL: ${QDRANT_URL}
+      QDRANT_API_KEY: ${QDRANT_API_KEY}
+    volumes:
+      - ./data:/app/data
+      - ./temp_uploads:/app/temp_uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3400/auth/me').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # Uncomment to run Qdrant locally instead of cloud
+  # qdrant:
+  #   image: qdrant/qdrant:latest
+  #   container_name: snaphunt-qdrant
+  #   ports:
+  #     - "6333:6333"
+  #   volumes:
+  #     - ./qdrant_storage:/qdrant/storage
+  #   restart: unless-stopped
